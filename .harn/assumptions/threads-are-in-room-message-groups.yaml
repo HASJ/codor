@@ -1,0 +1,14 @@
+id: threads-are-in-room-message-groups
+hash: a-d4bb13f911e1
+title: A thread is a message group inside its room, never a room of its own
+state: active
+statement: A thread must be a group of messages inside one room keyed by the message it
+  was started from, never a room of its own, because members, deliveries, the
+  room change sequence, meters and run journals are all room-scoped: a message
+  carries an optional thread_root_id whose absence means the main channel, a
+  thread never nests, its root message stays in the main channel, and routing
+  stays thread-blind so a mention reaches its recipient wherever it was written.
+depends_on:
+  - changelog-is-sync-cursor
+  - blob-path-contained
+created_by: threads

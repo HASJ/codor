@@ -78,7 +78,8 @@ Message {
   mentions: MentionSpan[]  // resolved at post/finalize time, see §3
   refs: number[]        // #ids referenced anywhere in body
   ledger_refs: string[] // [[note]] names referenced (§6)
-  reply_to?: number     // threading hint for surfaces; does not affect routing
+  reply_to?: number     // display hint for surfaces; does not affect routing
+  thread_root_id?: number // the thread this message lives in (§3.6); absent = main channel
   run?: RunSummary      // lifecycle-root kind='run' only
   run_parent_id?: number // continuation kind='run' only; points to the lifecycle root
   ask?: AskCard         // kind='ask'|'approval' only
@@ -195,6 +196,51 @@ therefore replays the partial hydration rather than skipping unseen rows.
 **Human inbox lifecycle.** A delivery addressed to a human is an inbox record with `read_ts?`;
 the `mark_read` act sets it; unread counts derive from it; inbox changes flow through the
 change log like everything else.
+
+<!-- harn:assume threads-are-in-room-message-groups ref=thread-protocol-documentation -->
+**Threads.** A thread is a group of messages INSIDE a channel, keyed by the message it was
+started from. It is not a channel: members, deliveries, the change log, meters and run
+journals stay channel-scoped, and only a message's display location changes.
+
+```ts
+Thread {
+  room: RoomId
+  root_message_id: number   // the message it hangs off; that message stays in the main channel
+  title: string             // derived from the root's first line when nobody supplies one
+  state: 'open' | 'closed'  // closing is manual; there is no auto-archive
+  created_by: MemberId
+  created_ts: string
+  closed_ts?: string
+}
+
+ThreadSummary {            // what surfaces render; counts are derived by query, never stored
+  root_message_id: number
+  title: string
+  state: 'open' | 'closed'
+  reply_count: number
+  last_ts?: string
+  last_author_handle?: string
+  unread: number           // against the viewer's THREAD cursor, never the channel cursor
+}
+```
+
+Rules: threads never nest (a message carrying `thread_root_id` cannot be a root); a closed
+thread refuses NEW posts, while a turn that inherited its thread when it started still lands
+there; `create_thread` / `set_thread_state` need the posting role, `mark_thread_read` only the
+observer role. Threads hydrate whole on every subscribe because their summaries move without
+the thread row changing (a reply changes the count).
+
+Routing is **thread-blind** (§3): a mention selects its recipients wherever it was written, so
+a human in the main channel reaches an agent busy in a thread with a plain `@handle`. A reply
+follows the DELIVERY, not the agent: a fresh run message inherits the thread of the last
+delivery its turn admitted. Threaded deliveries carry `thread=#N` in their header plus one
+line naming `codor post --main`, the escape hatch an agent uses to address the whole channel
+from inside a thread. Opening and closing a thread post a system message in the main channel.
+
+Thread unread has its own durable cursor (`mark_thread_read`, monotonic). Thread messages are
+interleaved in the channel's single seq stream, so the channel cursor would otherwise clear a
+thread nobody opened.
+<!-- harn:end threads-are-in-room-message-groups -->
 
 ## 3. Mention grammar and routing
 

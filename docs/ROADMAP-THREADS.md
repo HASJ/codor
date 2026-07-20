@@ -266,89 +266,98 @@ contracts; phase 3 lands after phase 2.
 
 ### Phase 0 — setup
 - [x] Branch `feat/threads` off `main`
-- [ ] Write `docs/ROADMAP-THREADS.md` (this plan + checklist); commit
+- [x] Write `docs/ROADMAP-THREADS.md` (this plan + checklist); commit
 
 ### Phase 1 — protocol (`packages/protocol/src`)
-- [ ] `message.ts`: `thread_root_id?: MessageId` on `MessageSchema`, additive-default comment
-- [ ] New `thread.ts`: `ThreadSchema`, `ThreadSummarySchema` (`reply_count`, `last_ts`, `last_author_handle`, `unread`)
-- [ ] `index.ts`: export both
-- [ ] `ws.ts`: `PostFrameSchema.thread_root_id?`
-- [ ] `ws.ts`: acts `create_thread`, `set_thread_state`, `mark_thread_read`
-- [ ] `ws.ts`: server frame `{ type: 'thread', seq, thread, room? }`
-- [ ] `schemas.spec.ts`: round-trip + absent-optional + refusal cases
-- [ ] Confirm no `BROWSER_PROTOCOL_EPOCH` bump is needed; note why in the PR
-- [ ] `pnpm --filter @codor/protocol test` green; commit
+- [x] `message.ts`: `thread_root_id?: MessageId` on `MessageSchema`, additive-default comment
+- [x] New `thread.ts`: `ThreadSchema`, `ThreadSummarySchema` (`reply_count`, `last_ts`, `last_author_handle`, `unread`)
+- [x] `index.ts`: export both
+- [x] `ws.ts`: `PostFrameSchema.thread_root_id?`
+- [x] `ws.ts`: acts `create_thread`, `set_thread_state`, `mark_thread_read`
+- [x] `ws.ts`: server frame `{ type: 'thread', seq, thread, room? }`
+- [x] `schemas.spec.ts`: round-trip + absent-optional + refusal cases
+- [x] Confirm no `BROWSER_PROTOCOL_EPOCH` bump is needed; note why in the PR
+- [x] `pnpm --filter @codor/protocol test` green; commit
 
 ### Phase 2 — store (`packages/switchboard/src/store.ts`)
-- [ ] `SCHEMA`: `messages.thread_root_id INTEGER`
-- [ ] `SCHEMA`: `threads (room, root_message_id, title, state, created_by, created_ts, closed_ts)` + FK to `messages(room, id)` ON DELETE CASCADE
-- [ ] `SCHEMA`: `thread_read_cursors (room, root_message_id, viewer, through_seq)`
-- [ ] `migrateMessageThreads(db)` helper + wire into the migration run
-- [ ] Index `messages_thread (room, thread_root_id, id)`
-- [ ] `MessageRow` / `messageFromRow` / `postMessage` insert list carry `thread_root_id`
-- [ ] `createThread`, `getThread`, `listThreads`, `setThreadState`
-- [ ] `listThreadMessages(room, rootId, { before?, limit? })`
-- [ ] `threadSummary(room, rootId, viewer)` — derived counts, cursor-based unread
-- [ ] `markThreadRead` — monotonic, never moves backwards
-- [ ] `beginTurn`: run message inherits `thread_root_id` of the **last admitted delivery**
-- [ ] Continuation rows inherit the root run's thread (`continuation.ts`, `outputPatches`)
-- [ ] `store.spec.ts`: migration over a pre-migration fixture, no data loss
-- [ ] `store.spec.ts`: inheritance (single thread, mixed batch, none)
-- [ ] `store.spec.ts`: cursor monotonicity + unread unaffected by `mark_room_read`
-- [ ] `pnpm --filter @codor/switchboard test` green; commit
+- [x] `SCHEMA`: `messages.thread_root_id INTEGER`
+- [x] `SCHEMA`: `threads (room, root_message_id, title, state, created_by, created_ts, closed_ts)` + FK to `messages(room, id)` ON DELETE CASCADE
+- [x] `SCHEMA`: `thread_read_cursors (room, root_message_id, viewer, through_seq)`
+- [x] `migrateMessageThreads(db)` helper + wire into the migration run
+- [x] Index `messages_thread (room, thread_root_id, id)`
+- [x] `MessageRow` / `messageFromRow` / `postMessage` insert list carry `thread_root_id`
+- [x] `createThread`, `getThread`, `listThreads`, `setThreadState`
+- [x] `listThreadMessages(room, rootId, { before?, limit? })`
+- [x] `threadSummary(room, rootId, viewer)` — derived counts, cursor-based unread
+- [x] `markThreadRead` — monotonic, never moves backwards
+- [x] `beginTurn`: run message inherits `thread_root_id` of the **last admitted delivery**
+- [x] Continuation rows inherit the root run's thread (`createRunContinuation`)
+- [x] `store.spec.ts`: migration over a pre-migration fixture, no data loss
+- [x] `store.spec.ts`: inheritance (single thread, mixed batch, none)
+- [x] `store.spec.ts`: cursor monotonicity + unread unaffected by `mark_room_read`
+- [x] `pnpm --filter @codor/switchboard test` green; commit
 
 ### Phase 3 — daemon + router (`packages/switchboard/src`)
-- [ ] `postChatMessage` takes `threadRootId`; `postHumanMessage` / `postAgentMessage` pass through
-- [ ] Validation: root exists, not deleted, not itself threaded, thread open
-- [ ] Close race: in-flight turn whose thread closed still lands in the thread
-- [ ] Acts `create_thread` / `set_thread_state` / `mark_thread_read` handled, authorized via `authorization.ts`
-- [ ] `changes.entity` gains `thread`; emit `thread` frames on change
-- [ ] Hydration emits thread frames before `sync_complete`
-- [ ] Ask/approval card inherits author's current run thread; audit reply inherits card
-- [ ] `router.ts` `composePayload`: `thread=#N` header field
-- [ ] `router.ts` `composeDeliveryBriefing`: thread conventions line incl. `codor post --main`
-- [ ] `router.spec.ts` payload goldens updated deliberately
-- [ ] System marker in main on thread create
-- [ ] System marker in main on thread close, with last-result preview
-- [ ] `daemon.spec.ts`: post-to-thread routes normally; agent reply lands in thread
-- [ ] `daemon.spec.ts`: main-channel mention of a thread-busy agent replies in main
-- [ ] `daemon.spec.ts`: closed-thread post refused; in-flight reply still lands
-- [ ] `pnpm --filter @codor/switchboard test` green; commit
+- [x] `postChatMessage` takes `threadRootId`; `postHumanMessage` / `postAgentMessage` pass through
+- [x] Validation: root exists, not deleted, not itself threaded, thread open
+- [x] Close race: in-flight turn whose thread closed still lands in the thread
+- [x] Acts `create_thread` / `set_thread_state` / `mark_thread_read` handled, authorized via `authorization.ts`
+- [x] `changes.entity` gains `thread`; emit `thread` frames on change
+- [x] Hydration emits thread frames before `sync_complete`
+- [x] Ask/approval card inherits author's current run thread; audit reply inherits card
+- [x] `router.ts` `composePayload`: `thread=#N` header field
+- [x] `router.ts` `composeDeliveryBriefing`: thread conventions line incl. `codor post --main`
+- [x] `router.spec.ts` payload goldens updated deliberately
+- [x] System marker in main on thread create
+- [x] System marker in main on thread close, with last-result preview
+- [x] `daemon.spec.ts`: post-to-thread routes normally; agent reply lands in thread
+- [x] `daemon.spec.ts`: main-channel mention of a thread-busy agent replies in main
+- [x] `daemon.spec.ts`: closed-thread post refused; in-flight reply still lands
+- [x] `pnpm --filter @codor/switchboard test` green; commit
 
 ### Phase 4 — REST + CLI
-- [ ] `server.ts`: `GET /api/rooms/:room/threads`
-- [ ] `server.ts`: `GET /api/rooms/:room/threads/:rootId/messages` (paged)
-- [ ] Same auth wrapper as neighbouring room routes; `server.spec.ts` coverage
-- [ ] `program.ts`: `post --thread <#id>`
-- [ ] `program.ts`: `post --main` (mutually exclusive with `--thread`)
-- [ ] `program.ts`: `tail --thread <#id>`
-- [ ] `program.ts`: `threads` command (`--all` includes closed)
-- [ ] `cli/src/index.spec.ts` coverage for each
-- [ ] `pnpm --filter @codor/cli test` green; commit
+- [x] `server.ts`: `GET /api/rooms/:room/threads`
+- [x] `server.ts`: `GET /api/rooms/:room/threads/:rootId/messages` (paged)
+- [x] Same auth wrapper as neighbouring room routes; `server.spec.ts` coverage
+- [x] `program.ts`: `post --thread <#id>`
+- [x] `program.ts`: `post --main` (mutually exclusive with `--thread`)
+- [x] `program.ts`: `tail --thread <#id>`
+- [x] `program.ts`: `threads` command (`--all` includes closed)
+- [x] `cli/src/index.spec.ts` coverage for each
+- [x] `pnpm --filter @codor/cli test` green; commit
 
 ### Phase 5 — web client (`packages/web-next/src`)
-- [ ] `app/store.ts`: `RoomSlice.threads`; `applyFrame` handles `type: 'thread'`
-- [ ] `room/Transcript.tsx`: hide threaded messages from the main transcript
-- [ ] `room/Transcript.tsx`: "N replies · last active" chip on root messages
-- [ ] `room/Transcript.tsx`: "Create thread" hover action (new code in a sibling file, not in the 76KB file)
-- [ ] New `room/ThreadPanel.tsx`: header, title, close control, message list
-- [ ] `ThreadPanel` sends `mark_thread_read` on open and on new messages while open
-- [ ] `room/Composer.tsx`: optional thread target sets `thread_root_id` on post
-- [ ] `RoomPage.tsx`: mount panel desktop-column + mobile-overlay like `ContextPanel`
-- [ ] Unread badge on the chip, independent of the channel cursor
-- [ ] `store.spec.ts` + a `ThreadPanel` render test
-- [ ] `pnpm --filter @codor/web-next test` green; commit
+- [x] `app/store.ts`: `RoomSlice.threads`; `applyFrame` handles `type: 'thread'`
+- [x] `room/Transcript.tsx`: hide threaded messages from the main transcript
+- [x] `room/Transcript.tsx`: "N replies · last active" chip on root messages
+- [x] `room/Transcript.tsx`: "Create thread" hover action (new code in a sibling file, not in the 76KB file)
+- [x] New `room/ThreadPanel.tsx`: header, title, close control, message list
+- [x] `ThreadPanel` sends `mark_thread_read` on open and on new messages while open
+- [x] `room/Composer.tsx`: optional thread target sets `thread_root_id` on post
+- [x] `RoomPage.tsx`: mount panel desktop-column + mobile-overlay like `ContextPanel`
+- [x] Unread badge on the chip, independent of the channel cursor
+- [x] `store.spec.ts` + a `ThreadPanel` render test
+- [x] `pnpm --filter @codor/web-next test` green; commit
 
 ### Phase 6 — assumptions, docs, release gate
-- [ ] `.harn/assumptions/threads-are-in-room-message-groups.yaml`
-- [ ] `.harn/assumptions/agent-replies-stay-in-their-thread.yaml`
-- [ ] `.harn/assumptions/thread-context-travels-in-delivery-header.yaml`
-- [ ] `.harn/assumptions/thread-unread-is-its-own-durable-cursor.yaml`
-- [ ] `harn:assume` / `harn:end` markers on every guarded region
-- [ ] `docs/PROTOCOL.md`: threads section; correct the `reply_to` "hint only" note
-- [ ] `docs/ARCHITECTURE.md`: thread grouping in the store section
-- [ ] `README.md` CLI reference: `threads`, `post --thread`, `post --main`
-- [ ] `pnpm -r build && pnpm test`
-- [ ] `harn check`
+- [x] `.harn/assumptions/threads-are-in-room-message-groups.yaml`
+- [x] `.harn/assumptions/agent-replies-stay-in-their-thread.yaml`
+- [x] `.harn/assumptions/thread-context-travels-in-delivery-header.yaml`
+- [x] `.harn/assumptions/thread-unread-is-its-own-durable-cursor.yaml`
+- [x] `harn:assume` / `harn:end` markers on every guarded region
+- [x] `docs/PROTOCOL.md`: threads section; correct the `reply_to` "hint only" note
+- [x] `docs/ARCHITECTURE.md`: thread grouping in the store section
+- [x] `README.md` CLI reference: `threads`, `post --thread`, `post --main`
+- [x] `pnpm -r build && pnpm test`
+- [ ] `harn check` — the `harn` CLI is not installed on this host; markers and the
+      four assumption files are in place, the gate itself has not been run
 - [ ] Live probe: full verification walkthrough below, on a restarted daemon
 - [ ] PR
+
+### Known gaps (deliberate, not done)
+- [ ] `ThreadPanel` reads only the thread messages already hydrated on the socket;
+      the paged REST endpoint (`GET /api/rooms/:room/threads/:rootId/messages`)
+      exists and is tested but the panel does not call it yet, so a thread whose
+      replies fell outside `hydrate_limit` opens partially filled.
+- [ ] Bridges (Slack/Telegram) have no thread mapping.
+

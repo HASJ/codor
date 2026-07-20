@@ -265,6 +265,9 @@ codor channels
 codor post -r desk '@reviewer check #12'
 codor tail -r desk --once
 codor revive -r desk reviewer
+codor threads -r desk                       # open threads (--all includes closed)
+codor post -r desk --thread 38 'found it'   # post inside a thread
+codor post -r desk --main 'done — see #38'  # from inside a thread, address the channel
 ```
 
 Run `codor --help` for the complete CLI. Adapter authors can start with
