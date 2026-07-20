@@ -9,6 +9,7 @@ import {
   type RoomMeter,
   type RoomSupport,
   type ServerFrame,
+  type ThreadSummary,
 } from '@codor/protocol';
 import { create } from 'zustand';
 
@@ -29,6 +30,7 @@ export interface RoomSlice {
   memberHistory: Record<string, MemberStateObservation[]>;
   messages: Record<number, Message>;
   inbox: Record<string, Delivery>;
+  threads: Record<number, ThreadSummary>;
   meter: RoomMeter | undefined;
   runEvents: Record<number, RunEventBuffer>;
   support: RoomSupport | undefined;
@@ -54,6 +56,7 @@ const emptyInbox: Record<string, Delivery> = {};
 const emptyRunEvents: Record<number, RunEventBuffer> = {};
 const emptyMemberHistory: Record<string, MemberStateObservation[]> = {};
 const emptyErrors: string[] = [];
+const emptyThreads: Record<number, ThreadSummary> = {};
 
 const EMPTY_ROOM: RoomSlice = {
   hydrated: false,
@@ -64,6 +67,7 @@ const EMPTY_ROOM: RoomSlice = {
   memberHistory: emptyMemberHistory,
   messages: emptyMessages,
   inbox: emptyInbox,
+  threads: emptyThreads,
   meter: undefined,
   runEvents: emptyRunEvents,
   support: undefined,
@@ -80,6 +84,7 @@ const freshRoom = (room?: Room): RoomSlice => ({
   memberHistory: {},
   messages: {},
   inbox: {},
+  threads: {},
   meter: undefined,
   runEvents: {},
   support: undefined,
@@ -95,10 +100,11 @@ interface HydrationStaging {
   inbox: Record<string, Delivery>;
   meter?: RoomMeter;
   support?: RoomSupport;
+  threads: Record<number, ThreadSummary>;
 }
 
 const staging = new Map<string, HydrationStaging>();
-const freshStaging = (): HydrationStaging => ({ members: {}, messages: {}, inbox: {} });
+const freshStaging = (): HydrationStaging => ({ members: {}, messages: {}, inbox: {}, threads: {} });
 
 function frameRoom(frame: ServerFrame, fallback?: string): string | undefined {
   switch (frame.type) {
@@ -120,6 +126,8 @@ function frameRoom(frame: ServerFrame, fallback?: string): string | undefined {
       return frame.support.room;
     case 'run_event':
       return frame.room;
+    case 'thread':
+      return frame.room ?? fallback;
     default:
       return fallback;
   }
@@ -200,6 +208,9 @@ export const useClientStore = create<ClientState>((set, get) => ({
         case 'room_support':
           stage.support = frame.support;
           return;
+        case 'thread':
+          stage.threads[frame.thread.root_message_id] = frame.thread;
+          return;
         default:
           break;
       }
@@ -229,6 +240,7 @@ export const useClientStore = create<ClientState>((set, get) => ({
           const members = { ...hydrated.members, ...current.members };
           const messages = { ...hydrated.messages, ...current.messages };
           const inbox = { ...hydrated.inbox, ...current.inbox };
+          const threads = { ...hydrated.threads, ...current.threads };
           let memberHistory = current.memberHistory;
           for (const member of Object.values(members)) {
             memberHistory = observeMember(memberHistory, member);
@@ -243,6 +255,7 @@ export const useClientStore = create<ClientState>((set, get) => ({
             memberHistory,
             messages,
             inbox,
+            threads,
             meter: current.meter ?? hydrated.meter,
             support: current.support ?? hydrated.support,
             historyCursor: frame.history_floor
@@ -256,6 +269,13 @@ export const useClientStore = create<ClientState>((set, get) => ({
             seq: bump,
             members: { ...current.members, [frame.member.id]: frame.member },
             memberHistory: observeMember(current.memberHistory, frame.member),
+          };
+          break;
+        case 'thread':
+          next = {
+            ...current,
+            seq: bump,
+            threads: { ...current.threads, [frame.thread.root_message_id]: frame.thread },
           };
           break;
         case 'message': {

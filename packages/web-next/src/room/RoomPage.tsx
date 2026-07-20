@@ -21,6 +21,7 @@ import { Composer } from './Composer.js';
 import { CreateChannelDialog } from './CreateChannel.js';
 import { HoldBanner, InboxControl, SearchOverlay } from './panels.js';
 import { Transcript } from './Transcript.js';
+import { ThreadPanel } from './ThreadPanel.js';
 
 export function RoomPage(props: {
   room: string;
@@ -47,6 +48,10 @@ export function RoomPage(props: {
     });
   }
   const connection = connectorRef.current;
+
+  // The open thread is view state, not connection state: it decides which panel
+  // is mounted and which root the composer posts into, and nothing else.
+  const [openThread, setOpenThread] = useState<number | undefined>();
 
   // In-place channel switching: select the room's keyed slice, keep the shared
   // socket and every background subscription alive, and let the URL follow.
@@ -117,6 +122,7 @@ export function RoomPage(props: {
               onBack: () => setSurface('channels'),
               onContext: () => setMobileContext(true),
             }}
+            onOpenThread={setOpenThread}
           />
         )}
         {mobileContext && surface === 'room' && (
@@ -125,6 +131,17 @@ export function RoomPage(props: {
               Close
             </button>
             <ContextPanel room={room} token={token} connection={connection} />
+          </div>
+        )}
+        {openThread !== undefined && surface === 'room' && (
+          <div className="nx-mobile-context" data-testid="mobile-thread">
+            <ThreadPanel
+              room={room}
+              rootMessageId={openThread}
+              token={token}
+              connection={connection}
+              onClose={() => setOpenThread(undefined)}
+            />
           </div>
         )}
       </div>
@@ -139,8 +156,21 @@ export function RoomPage(props: {
         connection={connection}
         token={token}
         onContext={() => setResponsiveContext(true)}
+        onOpenThread={setOpenThread}
       />
-      <ContextPanel room={room} token={token} connection={connection} />
+      {/* One side column at a time: an open thread is what the operator is
+          reading, so it takes the slot rather than squeezing a third column. */}
+      {openThread !== undefined ? (
+        <ThreadPanel
+          room={room}
+          rootMessageId={openThread}
+          token={token}
+          connection={connection}
+          onClose={() => setOpenThread(undefined)}
+        />
+      ) : (
+        <ContextPanel room={room} token={token} connection={connection} />
+      )}
       {responsiveContext && (
         <Modal
           label="Channel context"
@@ -333,6 +363,7 @@ function ChatPanel(props: {
   connection: Connection;
   token: () => string;
   onContext?: () => void;
+  onOpenThread?: (rootMessageId: number) => void;
   mobile?: { onBack: () => void; onContext: () => void };
 }) {
   const room = useClientStore((state) => roomSlice(state, props.room).room);
@@ -363,7 +394,12 @@ function ChatPanel(props: {
           <IconButton icon={MoreVertical} label="Channel details" data-testid="mobile-kebab" onClick={props.mobile.onContext} />
         </header>
         <HoldBanner room={props.room} connection={props.connection} />
-        <Transcript room={props.room} token={props.token} connection={props.connection} />
+        <Transcript
+          room={props.room}
+          token={props.token}
+          connection={props.connection}
+          onOpenThread={props.onOpenThread}
+        />
         <Composer room={props.room} token={props.token} connection={props.connection} />
       </main>
     );
@@ -396,7 +432,12 @@ function ChatPanel(props: {
         </div>
       </header>
       <HoldBanner room={props.room} connection={props.connection} />
-      <Transcript room={props.room} token={props.token} connection={props.connection} />
+      <Transcript
+        room={props.room}
+        token={props.token}
+        connection={props.connection}
+        onOpenThread={props.onOpenThread}
+      />
       <Composer room={props.room} token={props.token} connection={props.connection} />
       {searching && <SearchOverlay room={props.room} token={props.token} onClose={() => setSearching(false)} />}
     </main>

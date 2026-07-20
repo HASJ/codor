@@ -117,6 +117,39 @@ describe('room-keyed client state', () => {
     }));
     expect(roomSlice(useClientStore.getState(), 'alpha').runEvents).toEqual({});
   });
+
+  it('handles threads in the slice, overrides them, and retains them on room switch', () => {
+    const store = useClientStore.getState();
+    store.setActiveRoom('alpha');
+    store.applyFrame(frame({ type: 'self', room: 'alpha', member_id: 'alpha-human' }));
+    store.applyFrame(frame({ type: 'room', seq: 0, room: room('alpha') }));
+    store.applyFrame(frame({ type: 'sync_complete', room: 'alpha', seq: 1 }));
+
+    const thread1 = {
+      root_message_id: 42,
+      title: 'Thread 42',
+      state: 'open' as const,
+      reply_count: 2,
+      unread: 1,
+    };
+    store.applyFrame(frame({ type: 'thread', seq: 2, room: 'alpha', thread: thread1 }));
+
+    expect(roomSlice(useClientStore.getState(), 'alpha').threads[42]).toEqual(thread1);
+
+    const thread1Updated = {
+      root_message_id: 42,
+      title: 'Thread 42 Updated',
+      state: 'closed' as const,
+      reply_count: 3,
+      unread: 0,
+    };
+    store.applyFrame(frame({ type: 'thread', seq: 3, room: 'alpha', thread: thread1Updated }));
+    expect(roomSlice(useClientStore.getState(), 'alpha').threads[42]).toEqual(thread1Updated);
+
+    // Switch room and ensure threads survive
+    store.setActiveRoom('beta');
+    expect(roomSlice(useClientStore.getState(), 'alpha').threads[42]).toEqual(thread1Updated);
+  });
 });
 
 describe('resubscribe preserves a hydrated, paged room', () => {
