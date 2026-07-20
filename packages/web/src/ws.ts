@@ -4,7 +4,10 @@ import { setActiveBrowserAccessToken } from './crypto.js';
 import { HISTORY_PAGE_SIZE, useRoomStore } from './state.js';
 
 export interface Connection {
-  post(body: string, opts?: { replyTo?: number; attachments?: string[] }): void;
+  post(
+    body: string,
+    opts?: { replyTo?: number; attachments?: string[]; threadRootId?: number },
+  ): void;
   act(act: Act): void;
   disconnect(): void;
   reconnect(): void;
@@ -98,6 +101,7 @@ export function connect(options: ConnectOptions): Connection {
         room: options.room,
         body,
         ...(opts?.replyTo !== undefined && { reply_to: opts.replyTo }),
+        ...(opts?.threadRootId !== undefined && { thread_root_id: opts.threadRootId }),
         ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
       }),
     act: (act) => send({ type: 'act', room: options.room, act }),

@@ -1,0 +1,14 @@
+id: thread-context-travels-in-delivery-header
+hash: a-539e230c9704
+title: A threaded delivery says which thread it is, on every delivery
+state: active
+statement: A delivery whose message belongs to a thread must carry thread=#N in its
+  immutable header plus one line stating that the reply posts in that thread and
+  that codor post --main addresses the whole channel, on EVERY such delivery
+  rather than in the once-per-member conventions trailer, because a recipient
+  cannot see the channel and the thread it is being spoken to in changes from
+  delivery to delivery; main-channel deliveries stay byte-identical to before.
+depends_on:
+  - codor-delivery-header-identifies-channel
+  - agent-replies-stay-in-their-thread
+created_by: threads

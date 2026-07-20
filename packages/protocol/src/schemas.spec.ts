@@ -31,6 +31,8 @@ import {
   ServerFrameSchema,
   TextDeltaPayloadSchema,
   ThinkingLevelSchema,
+  ThreadSchema,
+  ThreadSummarySchema,
   ToolCallPayloadSchema,
   ToolResultPayloadSchema,
   WireEventSchema,
@@ -1400,3 +1402,120 @@ describe('a session carries the environment its children need', () => {
   });
 });
 // harn:end a-session-carries-the-environment-its-children-need
+
+// harn:assume threads-are-in-room-message-groups ref=thread-schema-regression
+describe('threads are in-room message groups', () => {
+  const thread = {
+    room: 'traderjoe-eng',
+    root_message_id: 38,
+    title: 'new-feature',
+    state: 'open',
+    created_by: ULID_A,
+    created_ts: TS,
+  } as const;
+
+  const summary = {
+    root_message_id: 38,
+    title: 'new-feature',
+    state: 'open',
+    read_through_seq: 91,
+  } as const;
+
+  it('round-trips a thread', () => {
+    expect(ThreadSchema.parse(thread)).toEqual(thread);
+  });
+
+  it('round-trips a summary', () => {
+    expect(ThreadSummarySchema.parse(summary)).toEqual(summary);
+  });
+
+  it('leaves a fresh thread without a closed timestamp', () => {
+    expect(ThreadSchema.parse(thread).closed_ts).toBeUndefined();
+  });
+
+  it('carries no read position on a summary meant for every subscriber', () => {
+    // A broadcast summary is the shared facts only: one viewer's cursor fanned
+    // out would tell every other viewer they had read what they have not.
+    const broadcast = ThreadSummarySchema.parse({ ...summary, read_through_seq: undefined });
+    expect(broadcast.read_through_seq).toBeUndefined();
+    expect(broadcast.title).toBe('new-feature');
+  });
+
+  it('rejects a state the protocol does not define', () => {
+    expect(ThreadSchema.safeParse({ ...thread, state: 'archived' }).success).toBe(false);
+  });
+
+  it('rejects a root that is not a message id', () => {
+    expect(ThreadSchema.safeParse({ ...thread, root_message_id: 0 }).success).toBe(false);
+  });
+
+  it('treats a message with no thread as the main channel', () => {
+    // Absent is the additive default: every message stored before threads existed
+    // parses unchanged and belongs to the channel itself.
+    expect(MessageSchema.parse(chatMessage).thread_root_id).toBeUndefined();
+  });
+
+  it('carries a thread on a message that lives in one', () => {
+    expect(MessageSchema.parse({ ...chatMessage, thread_root_id: 38 }).thread_root_id).toBe(38);
+  });
+
+  it('accepts a post frame targeting a thread', () => {
+    const frame = ClientFrameSchema.parse({
+      type: 'post',
+      room: 'traderjoe-eng',
+      body: 'in the thread',
+      thread_root_id: 38,
+    });
+    expect(frame).toMatchObject({ type: 'post', thread_root_id: 38 });
+  });
+
+  it('accepts a post frame with no thread as a main-channel post', () => {
+    const frame = ClientFrameSchema.parse({ type: 'post', room: 'traderjoe-eng', body: 'in the channel' });
+    expect(frame).toMatchObject({ type: 'post' });
+    expect('thread_root_id' in frame && frame.thread_root_id).toBeFalsy();
+  });
+
+  it('accepts the thread acts', () => {
+    expect(ActSchema.parse({ act: 'create_thread', root_message_id: 38 })).toMatchObject({ act: 'create_thread' });
+    expect(ActSchema.parse({ act: 'create_thread', root_message_id: 38, title: 'new-feature' }).act).toBe('create_thread');
+    expect(ActSchema.parse({ act: 'set_thread_state', root_message_id: 38, state: 'closed' }).act).toBe('set_thread_state');
+  });
+
+  it('rejects a titleless-but-empty thread title', () => {
+    expect(ActSchema.safeParse({ act: 'create_thread', root_message_id: 38, title: '' }).success).toBe(false);
+  });
+
+  it('carries a thread summary on the wire', () => {
+    const frame = ServerFrameSchema.parse({ type: 'thread', seq: 91, thread: summary });
+    expect(frame).toMatchObject({ type: 'thread', seq: 91 });
+  });
+
+  it('logs a thread change so delta-sync carries it', () => {
+    expect(ChangeLogEntrySchema.parse({
+      room: 'traderjoe-eng',
+      seq: 91,
+      entity: 'thread',
+      entity_id: '38',
+    }).entity).toBe('thread');
+  });
+});
+// harn:end threads-are-in-room-message-groups
+
+// harn:assume thread-unread-is-its-own-durable-cursor ref=mark-thread-read-regression
+describe('thread unread is its own durable cursor', () => {
+  it('accepts a thread read cursor act', () => {
+    expect(ActSchema.parse({ act: 'mark_thread_read', root_message_id: 38, through_seq: 91 }).act)
+      .toBe('mark_thread_read');
+  });
+
+  it('accepts seq 0 — a viewer who has read nothing in the thread', () => {
+    expect(ActSchema.safeParse({ act: 'mark_thread_read', root_message_id: 38, through_seq: 0 }).success)
+      .toBe(true);
+  });
+
+  it('rejects a cursor that is not a room sequence', () => {
+    expect(ActSchema.safeParse({ act: 'mark_thread_read', root_message_id: 38, through_seq: -1 }).success)
+      .toBe(false);
+  });
+});
+// harn:end thread-unread-is-its-own-durable-cursor

@@ -1,0 +1,14 @@
+id: agent-replies-stay-in-their-thread
+hash: a-cf2d6370594b
+title: An agent answers where it was spoken to, and can always address the channel
+state: active
+statement: A fresh run message must inherit the thread of the LAST delivery its turn
+  admitted — the same tie-break the router uses to choose a batched turn's
+  default reply target — and ask/approval cards plus their audit replies must
+  inherit the thread of the run that raised them, because a reply that escapes
+  its thread is invisible to the conversation that asked for it; an agent
+  retains codor post --main to address the whole channel from inside a thread.
+depends_on:
+  - threads-are-in-room-message-groups
+  - default-recipient-fallback-chain
+created_by: threads

@@ -36,7 +36,7 @@ function mentionQuery(draft: string, caret: number): { start: number; query: str
  *  addressed to the effective default recipient, an @ opens the mention popover,
  *  and a send that addresses nobody is blocked with an inline hint instead of
  *  leaving the room to guess (Richard #302). */
-export function Composer(props: { room: string; token: () => string; connection: Connection }) {
+export function Composer(props: { room: string; token: () => string; connection: Connection; threadRootId?: number }) {
   const isMobile = useIsMobile();
   const connected = useClientStore((state) => state.connected);
   const slice = useClientStore((state) => roomSlice(state, props.room));
@@ -208,6 +208,7 @@ export function Composer(props: { room: string; token: () => string; connection:
     props.connection.post(body, {
       ...(replyTo !== undefined && { replyTo }),
       ...(pending.length > 0 && { attachments: pending.map((attachment) => attachment.id) }),
+      ...(props.threadRootId !== undefined && { threadRootId: props.threadRootId }),
     });
     setDraft('');
     setReplyTo(undefined);
@@ -301,7 +302,7 @@ export function Composer(props: { room: string; token: () => string; connection:
           ref={areaRef}
           className="nx-composer-input"
           data-testid="composer-input"
-          placeholder={connected ? `Message ${room?.name ?? props.room}…` : 'Reconnecting…'}
+          placeholder={connected ? (props.threadRootId !== undefined ? 'Reply in thread…' : `Message ${room?.name ?? props.room}…`) : 'Reconnecting…'}
           aria-label="Message"
           rows={1}
           value={draft}

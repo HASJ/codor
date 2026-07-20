@@ -724,6 +724,62 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     }
   });
 
+  // harn:assume threads-are-in-room-message-groups ref=thread-rest-routes
+  app.get('/api/rooms/:room/threads', (req, reply) => {
+    const principal = authed(req, reply);
+    if (!principal) return;
+    const { room } = req.params as { room: string };
+    const viewer = authorizeRoom(principal, room, 'read', reply);
+    if (!viewer) return;
+    if (!daemon.store.getRoom(room)) return reply.code(404).send({ error: `no such room ${room}` });
+    const query = req.query as { state?: string };
+    // One response to one caller, so this may carry the caller's own unread and
+    // the derived activity the socket deliberately leaves to the client.
+    const threads = daemon.store.listThreadSummaries(room, viewer.id)
+      .filter((thread) => query.state === undefined || thread.state === query.state)
+      .map((thread) => ({
+        ...thread,
+        ...daemon.store.threadActivity(room, thread.root_message_id),
+        unread: daemon.store.threadUnread(room, thread.root_message_id, viewer.id),
+      }));
+    return reply.send({ threads });
+  });
+
+  /**
+   * A thread opened long after the fact has messages the socket's bounded
+   * hydration never sent. Without this the panel would show a thread it cannot
+   * fill in — paging the room's flat history to find them is the alternative,
+   * and it reads the whole channel to display a handful of replies.
+   */
+  app.get('/api/rooms/:room/threads/:rootId/messages', (req, reply) => {
+    const principal = authed(req, reply);
+    if (!principal) return;
+    const { room, rootId } = req.params as { room: string; rootId: string };
+    if (!authorizeRoom(principal, room, 'read', reply)) return;
+    if (!daemon.store.getRoom(room)) return reply.code(404).send({ error: `no such room ${room}` });
+    try {
+      const root = positiveInteger(rootId, 0, Number.MAX_SAFE_INTEGER, 'rootId');
+      if (!daemon.store.getThread(room, root)) {
+        return reply.code(404).send({ error: `no such thread #${String(root)}` });
+      }
+      const query = req.query as { before?: string; limit?: string };
+      const limit = positiveInteger(query.limit, 50, 100, 'limit');
+      const before = positiveInteger(
+        query.before,
+        Number.MAX_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
+        'before',
+      );
+      const page = daemon.store.listThreadMessages(room, root, { before, limit: limit + 1 });
+      const hasMore = page.length > limit;
+      const messages = hasMore ? page.slice(-limit) : page;
+      return reply.send({ messages: daemon.project(room, messages), has_more: hasMore });
+    } catch (error) {
+      return reply.code(400).send({ error: String(error) });
+    }
+  });
+  // harn:end threads-are-in-room-message-groups
+
   app.get('/api/rooms/:room/search', (req, reply) => {
     const principal = authed(req, reply);
     if (!principal) return;
@@ -1251,6 +1307,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
             for (const delivery of inbox) send({ type: 'inbox', seq: hydrationCursor, delivery });
             // harn:end agent-sync-hydrates-only-own-queued-inbox
             for (const meter of sync.meters) send({ type: 'meter', seq: hydrationCursor, meter });
+            // harn:assume threads-are-in-room-message-groups ref=thread-hydration
+            // Threads hydrate whole on every subscribe, warm or cold: their summaries
+            // are derived counts, so replaying them all is cheaper than teaching the
+            // change log to carry a projection that can move without a thread row
+            // changing (a reply changes the count).
+            for (const thread of daemon.store.listThreadSummaries(frame.room, actor.id)) {
+              send({ type: 'thread', seq: hydrationCursor, thread, ...address });
+            }
+            // harn:end threads-are-in-room-message-groups
             // harn:assume room-support-is-bounded-recipient-scoped-state ref=room-support-fanout
             if (sync.support !== undefined) {
               subscription.lastSupport = JSON.stringify(sync.support);
@@ -1275,6 +1340,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
                 frame.body,
                 frame.reply_to,
                 frame.awaiting_reply,
+                frame.thread_root_id,
               );
             } else {
               // Resolve prior uploads to metadata (refuses unknown/cross-room ids
@@ -1287,6 +1353,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
                 author: actor.id,
                 reply_to: frame.reply_to,
                 attachments,
+                thread_root_id: frame.thread_root_id,
               });
             }
           } else if (frame.type === 'act') {
@@ -1423,6 +1490,27 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
                 );
             }
             else if (act.act === 'set_role') daemon.setHumanRole(frame.room, act.member_id, act.role);
+            // harn:assume threads-are-in-room-message-groups ref=thread-act-dispatch
+            else if (act.act === 'create_thread') {
+              daemon.createThread(frame.room, act.root_message_id, actor.id, act.title);
+            } else if (act.act === 'set_thread_state') {
+              daemon.setThreadState(frame.room, act.root_message_id, act.state, actor.id);
+            }
+            // harn:end threads-are-in-room-message-groups
+            // harn:assume thread-unread-is-its-own-durable-cursor ref=mark-thread-read-dispatch
+            else if (act.act === 'mark_thread_read') {
+              // The cursor is the caller's own, so the answer goes back on this
+              // connection only — a fanned-out thread frame would hand every viewer
+              // somebody else's unread count.
+              const summary = daemon.markThreadRead(
+                frame.room,
+                act.root_message_id,
+                act.through_seq,
+                actor.id,
+              );
+              send({ type: 'thread', seq: daemon.store.currentSeq(frame.room), thread: summary });
+            }
+            // harn:end thread-unread-is-its-own-durable-cursor
             else if (act.act === 'pin_message') daemon.pinMessage(frame.room, act.message_id, act.pinned, actor.id);
             else if (act.act === 'delete_message') daemon.deleteMessage(frame.room, act.message_id, actor.id);
             else if (act.act === 'retry_run') daemon.retryRun(frame.room, act.message_id, actor.id);

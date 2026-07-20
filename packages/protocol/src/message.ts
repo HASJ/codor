@@ -87,7 +87,15 @@ export const MessageSchema = z.object({
   mentions: z.array(MentionSpanSchema),
   refs: z.array(MessageIdSchema), // #ids referenced anywhere in body
   ledger_refs: z.array(z.string()), // [[note]] names referenced
-  reply_to: MessageIdSchema.optional(), // threading hint; never affects routing
+  reply_to: MessageIdSchema.optional(), // display hint; never affects routing
+  // harn:assume threads-are-in-room-message-groups ref=message-thread-field
+  /**
+   * The thread this message belongs to, identified by its root message id.
+   * Absent is the additive main-channel default. Never affects routing: a
+   * thread changes where a message is DISPLAYED, not who receives it.
+   */
+  thread_root_id: MessageIdSchema.optional(),
+  // harn:end threads-are-in-room-message-groups
   run: RunSummarySchema.optional(), // kind='run' only
   // harn:assume continuation-writer-follows-journaled-output-ownership ref=continuation-message-schema
   /** A continuation's lifecycle root. Root run messages omit this and carry `run`. */

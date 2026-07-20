@@ -243,12 +243,20 @@ export function composePayload(ctx: PayloadContext, you: string): string {
   const to = ctx.toHandles.map((h) => `@${h}`).join(' ');
   // harn:assume codor-delivery-header-identifies-channel ref=delivery-header-template
   // harn:assume awaiting-reply-marker-is-delivery-context ref=awaiting-reply-header
+  // harn:assume thread-context-travels-in-delivery-header ref=delivery-header-thread
+  // A recipient cannot see the channel; the header IS its map. Without the thread
+  // field an agent answering inside a thread has no way to know it is in one, and
+  // no way to name the thread when it refers to the conversation.
   const headerKind = ctx.awaitingReply ? 'chat, awaiting reply' : ctx.authorKind;
+  const thread = ctx.message.thread_root_id === undefined
+    ? ''
+    : ` thread=#${ctx.message.thread_root_id}`;
   let payload =
-    `[codor channel=${ctx.room} msg=#${ctx.message.id} from=@${ctx.authorHandle} (${headerKind})\n` +
+    `[codor channel=${ctx.room} msg=#${ctx.message.id}${thread} from=@${ctx.authorHandle} (${headerKind})\n` +
     ` to=${to} · you=@${you}]\n` +
     `\n` +
     `${ctx.message.body}\n`;
+  // harn:end thread-context-travels-in-delivery-header
   // harn:end awaiting-reply-marker-is-delivery-context
   // harn:end codor-delivery-header-identifies-channel
   for (const ref of ctx.refs) {
@@ -263,6 +271,16 @@ export function composePayload(ctx: PayloadContext, you: string): string {
       `${ref.body}\n` +
       `--- end ledger note ---\n`;
   }
+  // harn:assume agent-replies-stay-in-their-thread ref=thread-reply-instruction
+  // Rides EVERY threaded delivery, not the once-per-member conventions trailer: which
+  // thread an agent is in changes from delivery to delivery, and an agent that has
+  // already been briefed would otherwise never be told where its reply will land.
+  if (ctx.message.thread_root_id !== undefined) {
+    payload +=
+      `\n[thread #${ctx.message.thread_root_id}: your reply posts in this thread. ` +
+      `Use codor post --main to address the whole channel.]\n`;
+  }
+  // harn:end agent-replies-stay-in-their-thread
   payload += composeDeliveryBriefing(ctx);
   return payload;
 }

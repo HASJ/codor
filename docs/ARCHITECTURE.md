@@ -30,7 +30,10 @@ One switchboard per machine. MVP: one machine. Multi-box channels (M2+) follow t
 Single Node/TypeScript process (Bun-compatible; plain Node for widest reuse). Owns:
 
 - **Channel store** — SQLite via better-sqlite3: `rooms`, `members`, `messages`, `deliveries`
-  (the per-member FIFO inboxes), `budgets`. Run event streams are **JSONL blobs on disk**
+  (the per-member FIFO inboxes), `budgets`, plus `threads` and `thread_read_cursors` keyed
+  `(room, root_message_id)`. A thread is a message group inside its channel — messages carry
+  an optional `thread_root_id`, and everything else (roster, deliveries, seq, meters) stays
+  channel-scoped (PROTOCOL §2). Run event streams are **JSONL blobs on disk**
   (`~/.codor/rooms/<room>/runs/<msg-id>.jsonl`), referenced by `RunSummary.events_ref` —
   the DB stays small and the "one message per run" rule is structural.
 - **Router** — implements PROTOCOL §3 exactly (recipient selection from mentions, whole-message

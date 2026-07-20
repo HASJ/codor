@@ -2087,3 +2087,260 @@ describe('recipient-scoped room support and strict addressed hydration', () => {
 // harn:end addressed-cold-hydration-is-strict-and-legacy-safe
 // harn:end actionable-inbox-clears-on-read-or-reply
 // harn:end room-support-is-bounded-recipient-scoped-state
+
+describe('threads', () => {
+  it('pre-migration database schema migration', () => {
+    const { owner } = openRoom(store);
+    const m1 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'first message' });
+    store.close();
+
+    // Revert DB schema to pre-migration state manually
+    const rawDb = new Database(join(dir, 'test.sqlite'));
+    rawDb.pragma('foreign_keys = OFF');
+    rawDb.exec(`
+      DROP INDEX IF EXISTS messages_thread;
+      DROP TABLE IF EXISTS thread_read_cursors;
+      DROP TABLE IF EXISTS threads;
+      ALTER TABLE messages DROP COLUMN thread_root_id;
+    `);
+    rawDb.close();
+
+    // Reopen with new Store, invoking migration
+    store = new Store(join(dir, 'test.sqlite'));
+    const retrieved = store.getMessage('eng', m1.id);
+    expect(retrieved).toBeDefined();
+    expect(retrieved?.thread_root_id).toBeUndefined();
+
+    // Verify we can write/read a thread message now
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root msg' });
+    const t = store.createThread('eng', { rootMessageId: root.id, title: 'Old Project', createdBy: owner.id });
+    expect(t.title).toBe('Old Project');
+  });
+
+  it('thread_root_id round-trips through postMessage, getMessage, listMessages', () => {
+    const { owner } = openRoom(store);
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    const t = store.createThread('eng', { rootMessageId: root.id, title: 'Roundtrip', createdBy: owner.id });
+
+    const threadMsg = store.postMessage('eng', {
+      author: owner.id,
+      kind: 'chat',
+      body: 'in thread',
+      thread_root_id: root.id,
+    });
+
+    expect(threadMsg.thread_root_id).toBe(root.id);
+
+    const gotMsg = store.getMessage('eng', threadMsg.id);
+    expect(gotMsg?.thread_root_id).toBe(root.id);
+
+    const list = store.listMessages('eng', { limit: 10 });
+    const found = list.find((m) => m.id === threadMsg.id);
+    expect(found).toBeDefined();
+    expect(found?.thread_root_id).toBe(root.id);
+  });
+
+  it('createThread validation logic', () => {
+    const { owner } = openRoom(store);
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    
+    // Missing root message
+    expect(() => store.createThread('eng', { rootMessageId: 9999, title: 'No Root', createdBy: owner.id }))
+      .toThrow('no such root message');
+
+    // Deleted root message
+    const root2 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root2' });
+    store.deleteMessage('eng', root2.id);
+    expect(() => store.createThread('eng', { rootMessageId: root2.id, title: 'Deleted Root', createdBy: owner.id }))
+      .toThrow('cannot start a thread on a deleted message');
+
+    // Nested thread root (root is itself inside a thread)
+    const t = store.createThread('eng', { rootMessageId: root.id, title: 'T1', createdBy: owner.id });
+    const reply = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'reply', thread_root_id: root.id });
+    expect(() => store.createThread('eng', { rootMessageId: reply.id, title: 'Nested', createdBy: owner.id }))
+      .toThrow('cannot start a thread on a nested message');
+  });
+
+  it('setThreadState closes and reopens, stamping and clearing closed_ts', () => {
+    const { owner } = openRoom(store);
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    const t = store.createThread('eng', { rootMessageId: root.id, title: 'T', createdBy: owner.id });
+    expect(t.state).toBe('open');
+    expect(t.closed_ts).toBeUndefined();
+
+    const closed = store.setThreadState('eng', root.id, 'closed');
+    expect(closed.state).toBe('closed');
+    expect(closed.closed_ts).toBeDefined();
+
+    const reopened = store.setThreadState('eng', root.id, 'open');
+    expect(reopened.state).toBe('open');
+    expect(reopened.closed_ts).toBeUndefined();
+  });
+
+  it('listThreadMessages ordering and paging', () => {
+    const { owner } = openRoom(store);
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'Paging', createdBy: owner.id });
+
+    const m1 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '1', thread_root_id: root.id });
+    const m2 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '2', thread_root_id: root.id });
+    const m3 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '3', thread_root_id: root.id });
+
+    // Ensure order is ID ascending
+    const all = store.listThreadMessages('eng', root.id);
+    expect(all.map(m => m.body)).toEqual(['1', '2', '3']);
+
+    // Page with before and limit
+    const paged = store.listThreadMessages('eng', root.id, { before: m3.id, limit: 2 });
+    expect(paged.map(m => m.body)).toEqual(['1', '2']);
+
+    const pagedOne = store.listThreadMessages('eng', root.id, { before: m2.id, limit: 1 });
+    expect(pagedOne.map(m => m.body)).toEqual(['1']);
+  });
+
+  it('threadSummary computed fields', () => {
+    const { owner } = openRoom(store);
+    const coder = store.addMember('eng', { kind: 'agent', handle: 'coder', display_name: 'Coder' });
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'Summary', createdBy: owner.id });
+
+    // Activity is derived on demand, never stored on the thread row.
+    const activity0 = store.threadActivity('eng', root.id);
+    expect(activity0.reply_count).toBe(0);
+    expect(activity0.last_ts).toBeUndefined();
+    expect(activity0.last_author_handle).toBeUndefined();
+
+    const m1 = store.postMessage('eng', { author: coder.id, kind: 'chat', body: '1', thread_root_id: root.id });
+    const activity1 = store.threadActivity('eng', root.id);
+    expect(activity1.reply_count).toBe(1);
+    expect(activity1.last_ts).toBe(m1.ts);
+    expect(activity1.last_author_handle).toBe('coder');
+
+    // Ignore deleted messages
+    const m2 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '2', thread_root_id: root.id });
+    store.deleteMessage('eng', m2.id);
+    const activity2 = store.threadActivity('eng', root.id);
+    expect(activity2.reply_count).toBe(1);
+    expect(activity2.last_ts).toBe(m1.ts);
+    expect(activity2.last_author_handle).toBe('coder');
+  });
+
+  it('markThreadRead is monotonic and thread unread is independent of room cursor', () => {
+    const { owner } = openRoom(store);
+    const alpha = store.addMember('eng', { kind: 'agent', handle: 'alpha', display_name: 'Alpha' });
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'Unread', createdBy: owner.id });
+
+    // Post reply from alpha
+    const m1 = store.postMessage('eng', { author: alpha.id, kind: 'chat', body: 'reply1', thread_root_id: root.id });
+    
+    // Check initial unread for owner
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
+
+    // Mark read at m1.seq
+    store.markThreadRead('eng', root.id, owner.id, m1.seq);
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(0);
+    // The cursor itself is what a viewer's own frames carry.
+    expect(store.threadSummary('eng', root.id, owner.id)?.read_through_seq).toBe(m1.seq);
+    // A broadcast summary carries no cursor at all.
+    expect(store.threadSummary('eng', root.id)?.read_through_seq).toBeUndefined();
+
+    // Verify monotonicity: lower seq does not move cursor backward
+    store.markThreadRead('eng', root.id, owner.id, m1.seq - 1);
+    expect(store.threadReadCursor('eng', root.id, owner.id)).toBe(m1.seq);
+
+    // Post another reply from alpha
+    const m2 = store.postMessage('eng', { author: alpha.id, kind: 'chat', body: 'reply2', thread_root_id: root.id });
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
+
+    // Mark ROOM read past m2.seq
+    store.markRoomRead('eng', owner.id, m2.seq);
+    // Thread unread should STILL be 1 because room read cursor must not clear thread unread
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
+  });
+
+  it('beginTurn inheritance of thread_root_id', () => {
+    const { owner } = openRoom(store);
+    const alpha = store.addMember('eng', { kind: 'agent', handle: 'alpha', display_name: 'Alpha', state: 'idle' });
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'Agent Thread', createdBy: owner.id });
+
+    // Case 1: Single threaded delivery -> inherits thread
+    const m1 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '@alpha hello', thread_root_id: root.id });
+    const d1 = store.createDelivery('eng', { message_id: m1.id, recipient: alpha.id });
+    
+    const turn1 = store.beginTurn('eng', {
+      memberId: alpha.id,
+      deliveryIds: [d1.id],
+      startedTs: new Date().toISOString(),
+      eventsRef: (id) => `runs/${id}.jsonl`,
+    });
+    expect(turn1).toBeDefined();
+    expect(turn1?.runMessage.thread_root_id).toBe(root.id);
+
+    // Complete the turn1 run so we can start another
+    store.updateMessage('eng', turn1!.runMessage.id, { run: { status: 'completed', started_ts: new Date().toISOString(), tool_calls: 0, events_ref: 'runs/1.jsonl' } });
+
+    // Case 2: Mixed batch -> inherits thread from the last admitted delivery (highest queue_seq)
+    // d2 is main channel, d3 is in thread
+    const m2 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '@alpha main channel' });
+    const d2 = store.createDelivery('eng', { message_id: m2.id, recipient: alpha.id });
+    const m3 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '@alpha in thread again', thread_root_id: root.id });
+    const d3 = store.createDelivery('eng', { message_id: m3.id, recipient: alpha.id });
+
+    const turn2 = store.beginTurn('eng', {
+      memberId: alpha.id,
+      deliveryIds: [d2.id, d3.id],
+      startedTs: new Date().toISOString(),
+      eventsRef: (id) => `runs/${id}.jsonl`,
+    });
+    expect(turn2).toBeDefined();
+    expect(turn2?.runMessage.thread_root_id).toBe(root.id);
+
+    // Complete turn2
+    store.updateMessage('eng', turn2!.runMessage.id, { run: { status: 'completed', started_ts: new Date().toISOString(), tool_calls: 0, events_ref: 'runs/2.jsonl' } });
+
+    // Reverse order: d4 is in thread, d5 is main channel -> last is main channel
+    const m4 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '@alpha in thread', thread_root_id: root.id });
+    const d4 = store.createDelivery('eng', { message_id: m4.id, recipient: alpha.id });
+    const m5 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '@alpha main channel again' });
+    const d5 = store.createDelivery('eng', { message_id: m5.id, recipient: alpha.id });
+
+    const turn3 = store.beginTurn('eng', {
+      memberId: alpha.id,
+      deliveryIds: [d4.id, d5.id],
+      startedTs: new Date().toISOString(),
+      eventsRef: (id) => `runs/${id}.jsonl`,
+    });
+    expect(turn3).toBeDefined();
+    expect(turn3?.runMessage.thread_root_id).toBeUndefined();
+  });
+});
+
+
+// harn:assume agent-replies-stay-in-their-thread ref=continuation-thread-regression
+describe('continuation output stays with its turn', () => {
+  it('puts every stretch of one turn in the thread the turn is answering', () => {
+    const { owner } = openRoom(store);
+    const agent = store.addMember('eng', {
+      kind: 'agent', handle: 'coder', display_name: 'Coder', state: 'running',
+    });
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'the parser' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'parser', createdBy: owner.id });
+    const trigger = store.postMessage('eng', {
+      author: owner.id, kind: 'chat', body: '@coder go', thread_root_id: root.id,
+    });
+    const delivery = store.createDelivery('eng', { message_id: trigger.id, recipient: agent.id });
+    const started = store.beginTurn('eng', {
+      memberId: agent.id,
+      deliveryIds: [delivery.id],
+      startedTs: new Date().toISOString(),
+      eventsRef: (id) => `runs/${id}.jsonl`,
+    })!;
+    // A turn that speaks twice must not leave its first half in the channel.
+    const continuation = store.createRunContinuation('eng', started.runMessage.id);
+    expect(started.runMessage.thread_root_id).toBe(root.id);
+    expect(continuation.thread_root_id).toBe(root.id);
+  });
+});
+// harn:end agent-replies-stay-in-their-thread

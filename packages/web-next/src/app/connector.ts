@@ -269,12 +269,21 @@ export function createConnector(options: ConnectorOptions): RoomConnector {
   const connector: RoomConnector = {
     room: () => currentRoom,
     state: () => state,
-    post: (body: string, opts?: { replyTo?: number; attachments?: string[] }) =>
+    post: (
+      body: string,
+      opts?: { replyTo?: number; attachments?: string[]; threadRootId?: number },
+    ) =>
       send({
         type: 'post',
         room: currentRoom,
         body,
         ...(opts?.replyTo !== undefined && { reply_to: opts.replyTo }),
+        // harn:assume threads-are-in-room-message-groups ref=connector-thread-post
+        // Which thread a post belongs to is the composer's to say, so it travels
+        // as an argument on the one send path — never as connection-level state,
+        // which a second composer or a retry would read as its own.
+        ...(opts?.threadRootId !== undefined && { thread_root_id: opts.threadRootId }),
+        // harn:end threads-are-in-room-message-groups
         ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
       }),
     act: (act: Act) => send({ type: 'act', room: currentRoom, act }),

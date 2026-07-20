@@ -499,6 +499,67 @@ describe('delivery payload template (byte-exact goldens)', () => {
     );
   });
 
+  // harn:assume thread-context-travels-in-delivery-header ref=threaded-payload-regression
+  it('names the thread in the header and says where a reply will land', () => {
+    const threaded = {
+      ...payloadCtx,
+      message: msg({
+        id: 93111,
+        author: richard.id,
+        kind: 'chat',
+        body: 'keep digging',
+        thread_root_id: 93107,
+      }),
+      toHandles: ['codex'],
+      refs: [],
+      ledgerRefs: [],
+      conventions: undefined,
+    };
+    expect(composePayload(threaded, 'codex')).toBe(
+      '[codor channel=traderjoe-eng msg=#93111 thread=#93107 from=@richard (human)\n' +
+        ' to=@codex · you=@codex]\n' +
+        '\n' +
+        'keep digging\n' +
+        '\n' +
+        '[thread #93107: your reply posts in this thread. ' +
+        'Use codor post --main to address the whole channel.]\n',
+    );
+  });
+
+  it('says nothing about threads in the main channel', () => {
+    const lean = {
+      ...payloadCtx,
+      message: msg({ id: 93112, author: richard.id, kind: 'chat', body: 'ship it' }),
+      toHandles: ['codex'],
+      refs: [],
+      ledgerRefs: [],
+      conventions: undefined,
+    };
+    // Absent is the default, and the default costs a recipient zero tokens.
+    expect(composePayload(lean, 'codex')).not.toContain('thread');
+  });
+
+  it('tells an already-briefed agent which thread it is in', () => {
+    // The conventions trailer is sent once per member; the thread changes per
+    // delivery, so the instruction cannot ride the trailer.
+    const threaded = {
+      ...payloadCtx,
+      message: msg({
+        id: 93113,
+        author: richard.id,
+        kind: 'chat',
+        body: 'and again',
+        thread_root_id: 93107,
+      }),
+      toHandles: ['codex'],
+      refs: [],
+      ledgerRefs: [],
+      conventions: undefined, // already briefed
+    };
+    expect(composePayload(threaded, 'codex')).toContain('[thread #93107:');
+  });
+  // harn:end thread-context-travels-in-delivery-header
+
   it('fan-out payloads are identical except the you= field', () => {
     const payloads = composeDeliveryPayloads(payloadCtx, [codex, claude]);
     const forCodex = payloads.get(codex.id)!;

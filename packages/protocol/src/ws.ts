@@ -8,6 +8,7 @@ import { AssignableHandleSchema } from './member.js';
 import { MemberSchema } from './member.js';
 import { MessageSchema } from './message.js';
 import { RoomMeterSchema, RoomSchema, RoomSupportSchema } from './room.js';
+import { ThreadStateSchema, ThreadSummarySchema } from './thread.js';
 
 // ── client → server ────────────────────────────────────────────────────────
 
@@ -53,6 +54,10 @@ export const PostFrameSchema = z.object({
   reply_to: MessageIdSchema.optional(),
   // ids of files uploaded to this room beforehand; capped at 8 per message
   attachments: z.array(z.string().min(1)).max(8).optional(),
+  // harn:assume threads-are-in-room-message-groups ref=post-thread-target
+  /** Post into this thread. Absent posts to the main channel. */
+  thread_root_id: MessageIdSchema.optional(),
+  // harn:end threads-are-in-room-message-groups
   // harn:assume awaiting-reply-marker-is-delivery-context ref=awaiting-reply-post-contract
   awaiting_reply: z.boolean().optional(),
   // harn:end awaiting-reply-marker-is-delivery-context
@@ -174,6 +179,25 @@ export const ActSchema = z.discriminatedUnion('act', [
     act: z.literal('retry_run'),
     message_id: MessageIdSchema,
   }),
+  // harn:assume threads-are-in-room-message-groups ref=thread-acts
+  z.object({
+    act: z.literal('create_thread'),
+    root_message_id: MessageIdSchema,
+    title: z.string().min(1).optional(), // derived from the root message when omitted
+  }),
+  z.object({
+    act: z.literal('set_thread_state'),
+    root_message_id: MessageIdSchema,
+    state: ThreadStateSchema,
+  }),
+  // harn:end threads-are-in-room-message-groups
+  // harn:assume thread-unread-is-its-own-durable-cursor ref=mark-thread-read-contract
+  z.object({
+    act: z.literal('mark_thread_read'),
+    root_message_id: MessageIdSchema,
+    through_seq: SeqSchema,
+  }),
+  // harn:end thread-unread-is-its-own-durable-cursor
 ]);
 export type Act = z.infer<typeof ActSchema>;
 
@@ -268,6 +292,14 @@ export const ServerFrameSchema = z.discriminatedUnion('type', [
   // harn:end live-delivery-consumption-is-idempotent
   z.object({ type: z.literal('meter'), seq: SeqSchema, meter: RoomMeterSchema }),
   z.object({ type: z.literal('room'), seq: SeqSchema, room: RoomSchema }),
+  // harn:assume threads-are-in-room-message-groups ref=thread-frame
+  z.object({
+    type: z.literal('thread'),
+    seq: SeqSchema,
+    thread: ThreadSummarySchema,
+    room: RoomIdSchema.optional(), // present on room-addressed subscriptions
+  }),
+  // harn:end threads-are-in-room-message-groups
   // harn:assume room-support-is-bounded-recipient-scoped-state ref=room-support-protocol
   z.object({ type: z.literal('room_support'), seq: SeqSchema, support: RoomSupportSchema }),
   // harn:end room-support-is-bounded-recipient-scoped-state

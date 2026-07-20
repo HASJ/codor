@@ -28,6 +28,9 @@ import {
   type RoomSupport,
   RoomSupportSchema,
   type RunSummary,
+  type Thread,
+  type ThreadState,
+  type ThreadSummary,
   deriveRoomColor,
 } from '@codor/protocol';
 
@@ -93,6 +96,7 @@ CREATE TABLE IF NOT EXISTS messages (
   refs TEXT NOT NULL,          -- number[] JSON
   ledger_refs TEXT NOT NULL,   -- string[] JSON
   reply_to INTEGER,
+  thread_root_id INTEGER,
   run TEXT,                    -- RunSummary JSON: events_ref pointer only, no events
   -- harn:assume continuation-writer-follows-journaled-output-ownership ref=continuation-message-storage
   run_parent_id INTEGER,       -- lifecycle root for a permanent continuation row
@@ -137,6 +141,26 @@ CREATE TABLE IF NOT EXISTS collaboration_groups (
   UNIQUE (room, root_message_id),
   FOREIGN KEY (room, root_message_id) REFERENCES messages(room, id) ON DELETE CASCADE
 );
+-- harn:assume threads-are-in-room-message-groups ref=thread-store-schema
+CREATE TABLE IF NOT EXISTS threads (
+  room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  root_message_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  created_by TEXT NOT NULL,
+  created_ts TEXT NOT NULL,
+  closed_ts TEXT,
+  PRIMARY KEY (room, root_message_id),
+  FOREIGN KEY (room, root_message_id) REFERENCES messages(room, id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS thread_read_cursors (
+  room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  root_message_id INTEGER NOT NULL,
+  viewer TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  PRIMARY KEY (room, root_message_id, viewer)
+);
+-- harn:end threads-are-in-room-message-groups
 CREATE TABLE IF NOT EXISTS collaboration_rounds (
   group_id TEXT NOT NULL REFERENCES collaboration_groups(id) ON DELETE CASCADE,
   round_number INTEGER NOT NULL CHECK (round_number > 0),
@@ -251,6 +275,44 @@ function migrateDeliveryPayloadSnapshot(db: Database.Database): void {
   // harn:end collaboration-groups-are-durable-state
 }
 // harn:end delivery-payload-snapshotted
+
+// harn:assume threads-are-in-room-message-groups ref=thread-store-migration
+function migrateMessageThreads(db: Database.Database): void {
+  const columns = db.pragma('table_info(messages)') as { name: string }[];
+  if (!columns.some((column) => column.name === 'thread_root_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN thread_root_id INTEGER');
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS threads (
+      room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      root_message_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+      created_by TEXT NOT NULL,
+      created_ts TEXT NOT NULL,
+      closed_ts TEXT,
+      PRIMARY KEY (room, root_message_id),
+      FOREIGN KEY (room, root_message_id) REFERENCES messages(room, id) ON DELETE CASCADE
+    );
+  `);
+  // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-read-cursor-store-migration
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS thread_read_cursors (
+      room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      root_message_id INTEGER NOT NULL,
+      viewer TEXT NOT NULL,
+      through_seq INTEGER NOT NULL,
+      PRIMARY KEY (room, root_message_id, viewer)
+    );
+  `);
+  // harn:end thread-unread-is-its-own-durable-cursor
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS messages_thread ON messages (room, thread_root_id, id);
+    CREATE INDEX IF NOT EXISTS thread_state_lookup ON threads (room, state, created_ts);
+  `);
+}
+// harn:end threads-are-in-room-message-groups
+
 
 function migrateMemberCustody(db: Database.Database): void {
   const columns = db.pragma('table_info(members)') as { name: string }[];
@@ -588,6 +650,7 @@ interface MessageRow {
   refs: string;
   ledger_refs: string;
   reply_to: number | null;
+  thread_root_id: number | null;
   run: string | null;
   run_parent_id: number | null;
   ask: string | null;
@@ -729,6 +792,7 @@ function messageFromRow(row: MessageRow): Message {
     refs: JSON.parse(row.refs),
     ledger_refs: JSON.parse(row.ledger_refs),
     reply_to: row.reply_to ?? undefined,
+    thread_root_id: row.thread_root_id ?? undefined,
     run: row.run ? JSON.parse(row.run) : undefined,
     run_parent_id: row.run_parent_id ?? undefined,
     ask: row.ask ? JSON.parse(row.ask) : undefined,
@@ -848,6 +912,7 @@ export interface NewMessage {
   refs?: number[];
   ledger_refs?: string[];
   reply_to?: number;
+  thread_root_id?: number;
   run?: RunSummary;
   run_parent_id?: number;
   ask?: Message['ask'];
@@ -954,6 +1019,7 @@ export class Store {
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
     migrateDeliveryPayloadSnapshot(this.db);
+    migrateMessageThreads(this.db);
     migrateMemberCustody(this.db);
     migrateMemberLifecycle(this.db);
     // MUST run after migrateMemberLifecycle: on a legacy database that one REBUILDS the
@@ -1435,6 +1501,7 @@ export class Store {
         refs: message.refs ?? [],
         ledger_refs: message.ledger_refs ?? [],
         reply_to: message.reply_to,
+        thread_root_id: message.thread_root_id,
         run: message.run,
         run_parent_id: message.run_parent_id,
         ask: message.ask,
@@ -1449,8 +1516,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO messages (room, id, author, kind, body, mentions, refs, ledger_refs,
-             reply_to, run, run_parent_id, ask, origin, attachments, ack, pinned, deleted, ts, seq, activity_seq)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             reply_to, thread_root_id, run, run_parent_id, ask, origin, attachments, ack, pinned, deleted, ts, seq, activity_seq)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           room,
@@ -1462,6 +1529,7 @@ export class Store {
           JSON.stringify(validated.refs),
           JSON.stringify(validated.ledger_refs),
           orNull(validated.reply_to),
+          orNull(validated.thread_root_id),
           jsonOrNull(validated.run),
           orNull(validated.run_parent_id),
           jsonOrNull(validated.ask),
@@ -1594,6 +1662,12 @@ export class Store {
       kind: 'run',
       body: '',
       run_parent_id: root.id,
+      // harn:assume agent-replies-stay-in-their-thread ref=continuation-thread-inheritance
+      // Every stretch of one turn's output belongs where the turn does. Leaving
+      // the earlier rows in the channel would scatter a single answer across two
+      // conversations.
+      ...(root.thread_root_id !== undefined && { thread_root_id: root.thread_root_id }),
+      // harn:end agent-replies-stay-in-their-thread
     }, { activity: 'defer' });
   }
 
@@ -1645,7 +1719,7 @@ export class Store {
   updateMessage(
     room: string,
     id: number,
-    patch: Partial<Pick<Message, 'body' | 'mentions' | 'refs' | 'ledger_refs' | 'run' | 'ask' | 'ack'>>,
+    patch: Partial<Pick<Message, 'body' | 'mentions' | 'refs' | 'ledger_refs' | 'run' | 'ask' | 'ack' | 'thread_root_id'>>,
     options: { activity?: MessageActivityMode } = {},
   ): Message {
     return this.db.transaction(() => {
@@ -1666,7 +1740,7 @@ export class Store {
       this.db
         .prepare(
           `UPDATE messages SET body = ?, mentions = ?, refs = ?, ledger_refs = ?,
-             run = ?, ask = ?, ack = ?, seq = ?, activity_seq = ?
+             run = ?, ask = ?, ack = ?, thread_root_id = ?, seq = ?, activity_seq = ?
            WHERE room = ? AND id = ?`,
         )
         .run(
@@ -1677,6 +1751,7 @@ export class Store {
           jsonOrNull(merged.run),
           jsonOrNull(merged.ask),
           fromBool(merged.ack === true),
+          orNull(merged.thread_root_id),
           seq,
           activitySeq,
           room,
@@ -2347,7 +2422,20 @@ export class Store {
               run: { ...existing.run, output_mode: 'messages' },
             }, { activity: 'defer' });
       } else {
-        const posted = this.postMessage(room, { author: opts.memberId, kind: 'run', body: '' });
+        // harn:assume agent-replies-stay-in-their-thread ref=run-message-thread-inheritance
+        // The run message inherits the thread of the last delivery it is replying to,
+        // so that the reply does not escape to the main channel.
+        const lastDelivery = admissible[admissible.length - 1]!;
+        const lastMessage = this.getMessage(room, lastDelivery.message_id);
+        const threadRootId = lastMessage?.thread_root_id;
+
+        const posted = this.postMessage(room, {
+          author: opts.memberId,
+          kind: 'run',
+          body: '',
+          thread_root_id: threadRootId,
+        });
+        // harn:end agent-replies-stay-in-their-thread
         runMessage = this.updateMessage(room, posted.id, {
           run: {
             status: 'running',
@@ -3686,6 +3774,225 @@ export class Store {
     };
   }
   // harn:end addressed-cold-hydration-is-strict-and-legacy-safe
+
+  // ── threads ───────────────────────────────────────────────────────────
+
+  createThread(
+    room: string,
+    input: { rootMessageId: number; title: string; createdBy: string },
+  ): Thread {
+    return this.db.transaction(() => {
+      const root = this.getMessage(room, input.rootMessageId);
+      if (!root) {
+        throw new Error(`no such root message: #${input.rootMessageId}`);
+      }
+      if (root.deleted === true) {
+        throw new Error(`cannot start a thread on a deleted message: #${input.rootMessageId}`);
+      }
+      if (root.thread_root_id !== undefined) {
+        throw new Error(`cannot start a thread on a nested message: #${input.rootMessageId}`);
+      }
+      const existing = this.getThread(room, input.rootMessageId);
+      if (existing) {
+        throw new Error(`thread already exists on message: #${input.rootMessageId}`);
+      }
+      const thread: Thread = {
+        room,
+        root_message_id: input.rootMessageId,
+        title: input.title,
+        state: 'open',
+        created_by: input.createdBy,
+        created_ts: new Date().toISOString(),
+      };
+      this.db.prepare(
+        `INSERT INTO threads (room, root_message_id, title, state, created_by, created_ts, closed_ts)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      ).run(
+        thread.room,
+        thread.root_message_id,
+        thread.title,
+        thread.state,
+        thread.created_by,
+        thread.created_ts,
+      );
+      this.appendChange(room, 'thread', String(input.rootMessageId));
+      return thread;
+    })();
+  }
+
+  getThread(room: string, rootMessageId: number): Thread | undefined {
+    const row = this.db.prepare(
+      `SELECT * FROM threads WHERE room = ? AND root_message_id = ?`
+    ).get(room, rootMessageId) as {
+      room: string;
+      root_message_id: number;
+      title: string;
+      state: 'open' | 'closed';
+      created_by: string;
+      created_ts: string;
+      closed_ts: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      room: row.room,
+      root_message_id: row.root_message_id,
+      title: row.title,
+      state: row.state,
+      created_by: row.created_by,
+      created_ts: row.created_ts,
+      closed_ts: row.closed_ts ?? undefined,
+    };
+  }
+
+  listThreads(room: string, opts?: { state?: ThreadState }): Thread[] {
+    let sql = 'SELECT * FROM threads WHERE room = ?';
+    const params: unknown[] = [room];
+    if (opts?.state) {
+      sql += ' AND state = ?';
+      params.push(opts.state);
+    }
+    sql += ' ORDER BY created_ts ASC';
+    const rows = this.db.prepare(sql).all(...params) as {
+      room: string;
+      root_message_id: number;
+      title: string;
+      state: 'open' | 'closed';
+      created_by: string;
+      created_ts: string;
+      closed_ts: string | null;
+    }[];
+    return rows.map((row) => ({
+      room: row.room,
+      root_message_id: row.root_message_id,
+      title: row.title,
+      state: row.state,
+      created_by: row.created_by,
+      created_ts: row.created_ts,
+      closed_ts: row.closed_ts ?? undefined,
+    }));
+  }
+
+  setThreadState(room: string, rootMessageId: number, state: ThreadState): Thread {
+    return this.db.transaction(() => {
+      const thread = this.getThread(room, rootMessageId);
+      if (!thread) {
+        throw new Error(`no such thread: #${rootMessageId}`);
+      }
+      const closedTs = state === 'closed' ? new Date().toISOString() : null;
+      this.db.prepare(
+        `UPDATE threads SET state = ?, closed_ts = ? WHERE room = ? AND root_message_id = ?`
+      ).run(state, closedTs, room, rootMessageId);
+      this.appendChange(room, 'thread', String(rootMessageId));
+      return {
+        ...thread,
+        state,
+        closed_ts: closedTs ?? undefined,
+      };
+    })();
+  }
+
+  listThreadMessages(
+    room: string,
+    rootMessageId: number,
+    opts?: { before?: number; limit?: number },
+  ): Message[] {
+    const before = opts?.before ?? Number.MAX_SAFE_INTEGER;
+    const limit = opts?.limit ?? 100;
+    const rows = this.db.prepare(
+      `SELECT * FROM messages
+       WHERE room = ? AND thread_root_id = ? AND id < ?
+       ORDER BY id DESC LIMIT ?`
+    ).all(room, rootMessageId, before, limit) as MessageRow[];
+    return rows.reverse().map(messageFromRow);
+  }
+
+  /**
+   * The shared facts, plus the viewer's own cursor when one is named. Reply
+   * count and last activity are NOT here: a client holds the thread's messages
+   * already and derives both, so they stay live between summary frames instead
+   * of freezing at whatever the last push said.
+   */
+  threadSummary(room: string, rootMessageId: number, viewer?: string): ThreadSummary | undefined {
+    const thread = this.getThread(room, rootMessageId);
+    if (!thread) return undefined;
+    return {
+      root_message_id: rootMessageId,
+      title: thread.title,
+      state: thread.state,
+      // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-summary-cursor-store
+      // Only ever the caller's own cursor, so a broadcast summary (no viewer)
+      // cannot hand every subscriber somebody else's read position.
+      ...(viewer !== undefined && { read_through_seq: this.threadReadCursor(room, rootMessageId, viewer) }),
+      // harn:end thread-unread-is-its-own-durable-cursor
+    };
+  }
+
+  threadReadCursor(room: string, rootMessageId: number, viewer: string): number {
+    const cursor = this.db.prepare(
+      `SELECT through_seq FROM thread_read_cursors
+       WHERE room = ? AND root_message_id = ? AND viewer = ?`,
+    ).get(room, rootMessageId, viewer) as { through_seq: number } | undefined;
+    return cursor?.through_seq ?? 0;
+  }
+
+  /** Unread for one viewer: everything above their cursor that is not theirs. */
+  threadUnread(room: string, rootMessageId: number, viewer: string): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM messages
+       WHERE room = ? AND thread_root_id = ? AND deleted = 0 AND seq > ? AND author <> ?`,
+    ).get(room, rootMessageId, this.threadReadCursor(room, rootMessageId, viewer), viewer) as
+      { count: number };
+    return row.count;
+  }
+
+  /** Reply count and last activity, derived — the CLI and REST render these. */
+  threadActivity(room: string, rootMessageId: number): {
+    reply_count: number;
+    last_ts?: string;
+    last_author_handle?: string;
+  } {
+    const totals = this.db.prepare(
+      `SELECT COUNT(*) AS reply_count, MAX(id) AS last_id
+       FROM messages
+       WHERE room = ? AND thread_root_id = ? AND deleted = 0`,
+    ).get(room, rootMessageId) as { reply_count: number; last_id: number | null };
+    if (totals.last_id === null) return { reply_count: totals.reply_count };
+    const last = this.db.prepare(
+      `SELECT messages.ts, members.handle
+       FROM messages
+       LEFT JOIN members ON members.room = messages.room AND members.id = messages.author
+       WHERE messages.room = ? AND messages.id = ?`,
+    ).get(room, totals.last_id) as { ts: string; handle: string | null } | undefined;
+    return {
+      reply_count: totals.reply_count,
+      ...(last !== undefined && { last_ts: last.ts }),
+      ...(last?.handle != null && { last_author_handle: last.handle }),
+    };
+  }
+
+  listThreadSummaries(room: string, viewer?: string): ThreadSummary[] {
+    const threads = this.listThreads(room);
+    const summaries: ThreadSummary[] = [];
+    for (const thread of threads) {
+      const summary = this.threadSummary(room, thread.root_message_id, viewer);
+      if (summary) {
+        summaries.push(summary);
+      }
+    }
+    return summaries;
+  }
+
+  markThreadRead(room: string, rootMessageId: number, viewer: string, throughSeq: number): void {
+    // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-read-cursor-store
+    this.db.prepare(
+      `INSERT INTO thread_read_cursors (room, root_message_id, viewer, through_seq)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (room, root_message_id, viewer) DO UPDATE SET
+         through_seq = excluded.through_seq
+       WHERE excluded.through_seq > thread_read_cursors.through_seq`
+    ).run(room, rootMessageId, viewer, throughSeq);
+    // harn:end thread-unread-is-its-own-durable-cursor
+  }
 
   // ── helpers ───────────────────────────────────────────────────────────
 

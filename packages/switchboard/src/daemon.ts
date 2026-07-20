@@ -26,6 +26,8 @@ import type {
   RunSearchHit,
   ServerFrame,
   Session,
+  ThreadState,
+  ThreadSummary,
   WireEvent,
   CreateRoomRequest,
 } from '@codor/protocol';
@@ -85,6 +87,19 @@ export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const ORPHAN_ATTACHMENT_MS = 24 * 60 * 60 * 1000;
 const ATTACHMENT_ID = /^[0-9a-f]{32}$/;
+
+// harn:assume threads-are-in-room-message-groups ref=thread-title-derivation
+/** A thread nobody titled is unfindable in a list of threads, so the root's own
+ *  first line becomes the title. Trimmed hard: this is a label, not a preview. */
+const THREAD_TITLE_MAX = 60;
+export function deriveThreadTitle(rootBody: string): string {
+  const firstLine = rootBody.split('\n').map((line) => line.trim()).find((line) => line.length > 0);
+  if (firstLine === undefined) return 'thread';
+  return firstLine.length > THREAD_TITLE_MAX
+    ? `${firstLine.slice(0, THREAD_TITLE_MAX - 1).trimEnd()}…`
+    : firstLine;
+}
+// harn:end threads-are-in-room-message-groups
 
 function formatBytes(size: number): string {
   if (size < 1024) return `${String(size)} B`;
@@ -1818,6 +1833,27 @@ export class Daemon {
 
   // ── posting ───────────────────────────────────────────────────────────
 
+  // harn:assume threads-are-in-room-message-groups ref=thread-post-admission
+  /**
+   * A post names the thread it belongs to; the daemon decides whether that is a
+   * thread at all. Refusing here — rather than storing an orphan `thread_root_id`
+   * — keeps every threaded message reachable from a live thread row, which is the
+   * only reason the panel and the unread cursor can trust the grouping.
+   *
+   * A CLOSED thread refuses new posts because closing is a deliberate act. This
+   * check governs new posts only: a turn that inherited its thread at admission
+   * still lands there even if the thread closed mid-turn, because dropping a
+   * finished turn's output loses work nobody can get back.
+   */
+  private assertThreadPostable(room: string, threadRootId: number): void {
+    const thread = this.store.getThread(room, threadRootId);
+    if (!thread) throw new Error(`no such thread: #${String(threadRootId)}`);
+    if (thread.state === 'closed') {
+      throw new Error(`thread #${String(threadRootId)} is closed`);
+    }
+  }
+  // harn:end threads-are-in-room-message-groups
+
   private postChatMessage(
     room: string,
     body: string,
@@ -1826,8 +1862,10 @@ export class Daemon {
     awaitingReply = false,
     interim = false,
     attachments?: Attachment[],
+    threadRootId?: number,
   ): Message {
     const parsed = parseBody(body, this.store.listMembers(room));
+    if (threadRootId !== undefined) this.assertThreadPostable(room, threadRootId);
     // harn:assume eligible-multi-agent-routing-starts-one-group ref=multi-agent-group-ingress
     const committed = this.store.commitRoutedMessage(room, {
       message: {
@@ -1838,6 +1876,7 @@ export class Daemon {
         refs: parsed.refs,
         ledger_refs: parsed.ledger_refs,
         reply_to: replyTo,
+        ...(threadRootId !== undefined && { thread_root_id: threadRootId }),
         ...(attachments !== undefined && attachments.length > 0 && { attachments }),
       },
       plan: (message) => this.planRoutedMessage(
@@ -1858,12 +1897,26 @@ export class Daemon {
   postHumanMessage(
     room: string,
     body: string,
-    opts: { author?: string; reply_to?: number; attachments?: Attachment[] } = {},
+    opts: {
+      author?: string;
+      reply_to?: number;
+      attachments?: Attachment[];
+      thread_root_id?: number;
+    } = {},
   ): Message {
     const authorId = opts.author ?? this.ownerOf(room).id;
     const author = this.store.getMember(room, authorId);
     if (author?.kind !== 'human') throw new Error(`no such human author: ${authorId}`);
-    return this.postChatMessage(room, body, authorId, opts.reply_to, false, false, opts.attachments);
+    return this.postChatMessage(
+      room,
+      body,
+      authorId,
+      opts.reply_to,
+      false,
+      false,
+      opts.attachments,
+      opts.thread_root_id,
+    );
   }
 
   // harn:assume agent-network-authority-is-narrow ref=agent-interim-post-ingress
@@ -1873,6 +1926,7 @@ export class Daemon {
     body: string,
     replyTo?: number,
     awaitingReply = false,
+    threadRootId?: number,
   ): Message {
     const author = this.store.getMember(room, memberId);
     if (!author || author.kind !== 'agent' || author.removed_ts !== undefined) {
@@ -1884,9 +1938,89 @@ export class Daemon {
     const currentRun = this.store.listRunMessages(room, { author: memberId, limit: 1 })[0];
     if (currentRun?.run?.status === 'running') this.noteRunActivity(room, currentRun.id);
     // harn:end interim-agent-posts-are-nonfinal-routing
-    return this.postChatMessage(room, body, memberId, replyTo, awaitingReply, true);
+    return this.postChatMessage(
+      room,
+      body,
+      memberId,
+      replyTo,
+      awaitingReply,
+      true,
+      undefined,
+      threadRootId,
+    );
   }
   // harn:end agent-network-authority-is-narrow
+
+  // harn:assume threads-are-in-room-message-groups ref=thread-lifecycle-daemon
+  /**
+   * Threads hang off a message: the root stays in the main channel and the thread
+   * collects everything said about it. Nesting is refused at the store; a title
+   * nobody supplied is derived from the root's own words, because an untitled
+   * thread is unfindable in a list of threads.
+   */
+  createThread(room: string, rootMessageId: number, byMemberId: string, title?: string): ThreadSummary {
+    const root = this.store.getMessage(room, rootMessageId);
+    if (!root) throw new Error(`no such message: #${String(rootMessageId)}`);
+    const derived = title ?? deriveThreadTitle(root.body);
+    this.store.createThread(room, {
+      rootMessageId,
+      title: derived,
+      createdBy: byMemberId,
+    });
+    const author = this.store.getMember(room, byMemberId);
+    // The channel keeps a trace of every thread opened on it. System messages never
+    // route (router eligibility), so this is visible without waking an agent.
+    this.postSystemMessage(
+      room,
+      `@${author?.handle ?? 'someone'} started thread «${derived}» on #${String(rootMessageId)}`,
+    );
+    return this.emitThread(room, rootMessageId);
+  }
+
+  setThreadState(room: string, rootMessageId: number, state: ThreadState, byMemberId: string): ThreadSummary {
+    const thread = this.store.getThread(room, rootMessageId);
+    if (!thread) throw new Error(`no such thread: #${String(rootMessageId)}`);
+    if (thread.state === state) return this.emitThread(room, rootMessageId);
+    this.store.setThreadState(room, rootMessageId, state);
+    const actor = this.store.getMember(room, byMemberId);
+    const activity = this.store.threadActivity(room, rootMessageId);
+    const tail = state === 'closed' && activity.reply_count > 0
+      ? ` · ${String(activity.reply_count)} replies`
+      : '';
+    this.postSystemMessage(
+      room,
+      `@${actor?.handle ?? 'someone'} ${state === 'closed' ? 'closed' : 'reopened'} ` +
+        `thread «${thread.title}» on #${String(rootMessageId)}${tail}`,
+    );
+    return this.emitThread(room, rootMessageId);
+  }
+
+  /**
+   * Broadcasts the SHARED thread facts only. No viewer is passed, on purpose: a
+   * fanned-out summary carrying one viewer's read cursor would hand every other
+   * subscriber somebody else's unread position.
+   */
+  private emitThread(room: string, rootMessageId: number): ThreadSummary {
+    const summary = this.store.threadSummary(room, rootMessageId);
+    if (!summary) throw new Error(`no such thread: #${String(rootMessageId)}`);
+    this.emit(room, { type: 'thread', seq: this.store.currentSeq(room), thread: summary });
+    return summary;
+  }
+  // harn:end threads-are-in-room-message-groups
+
+  // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-read-cursor-daemon
+  /** Only this moves a thread's unread. Reading the parent channel never does. */
+  markThreadRead(room: string, rootMessageId: number, throughSeq: number, byMemberId: string): ThreadSummary {
+    if (!this.store.getThread(room, rootMessageId)) {
+      throw new Error(`no such thread: #${String(rootMessageId)}`);
+    }
+    this.store.markThreadRead(room, rootMessageId, byMemberId, throughSeq);
+    // Addressed to this caller alone — hence the viewer, and hence no broadcast.
+    const summary = this.store.threadSummary(room, rootMessageId, byMemberId);
+    if (!summary) throw new Error(`no such thread: #${String(rootMessageId)}`);
+    return summary;
+  }
+  // harn:end thread-unread-is-its-own-durable-cursor
 
   // harn:assume live-agent-waits-are-transient ref=transient-wait-registry
   // harn:assume answered-approval-tools-can-register-live-waits ref=approved-tool-wait-eligibility
@@ -3412,11 +3546,21 @@ export class Daemon {
   }
 
   private createInteraction(room: string, member: Member, card: AskCard, kind: 'ask' | 'approval'): void {
+    // harn:assume agent-replies-stay-in-their-thread ref=interaction-card-thread
+    // A card belongs to the work that raised it. Left in the main channel it would
+    // ask the room a question the room cannot place, while the thread that caused
+    // it goes silent.
+    const runningTurn = this.store.listRunMessages(room, { author: member.id, limit: 1 })[0];
+    const threadRootId = runningTurn?.run?.status === 'running'
+      ? runningTurn.thread_root_id
+      : undefined;
+    // harn:end agent-replies-stay-in-their-thread
     const cardMsg = this.store.postMessage(room, {
       author: member.id,
       kind,
       body: card.prompt,
       ask: card,
+      ...(threadRootId !== undefined && { thread_root_id: threadRootId }),
     });
     this.emitMessage(room, cardMsg);
     const targets = this.store
@@ -3486,12 +3630,15 @@ export class Daemon {
         answered_by: by,
         answered_ts: new Date().toISOString(),
       });
-      // Question answers remain visible history. A reply to a card never routes.
+      // Question answers remain visible history. A reply to a card never routes,
+      // and it belongs beside the card it answers — including inside a thread.
+      const card = this.store.getMessage(room, interaction.message_id);
       const audit = this.store.postMessage(room, {
         author: by,
         kind: 'chat',
         body: typeof answer === 'string' ? answer : JSON.stringify(answer),
         reply_to: interaction.message_id,
+        ...(card?.thread_root_id !== undefined && { thread_root_id: card.thread_root_id }),
       });
       this.emitMessage(room, audit);
     }

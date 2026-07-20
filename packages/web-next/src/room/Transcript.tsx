@@ -1,6 +1,7 @@
-import type { Attachment, Delivery, Member, Message, WireEvent } from '@codor/protocol';
-import { ArrowDown, Bot, Check, CheckCheck, ChevronRight, Clock3, Copy, Globe, LoaderCircle, Paperclip, Pencil, Pin, PinOff, Quote, RotateCcw, Search, Square, TerminalSquare, Trash2, X } from 'lucide-react';
+import type { Attachment, Delivery, Member, Message, WireEvent, ThreadSummary } from '@codor/protocol';
+import { ArrowDown, Bot, Check, CheckCheck, ChevronRight, Clock3, Copy, Globe, LoaderCircle, Paperclip, Pencil, Pin, PinOff, Quote, RotateCcw, Search, Square, TerminalSquare, Trash2, X, MessageSquare } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { ThreadChip } from './ThreadPanel.js';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
@@ -100,9 +101,10 @@ export function continuationVisibleMessages(
 }
 // harn:end continuation-writer-follows-journaled-output-ownership
 
-export function Transcript(props: { room: string; token: () => string; connection: Connection }) {
+export function Transcript(props: { room: string; token: () => string; connection: Connection; onOpenThread?: (rootMessageId: number) => void }) {
   const slice = useClientStore((state) => roomSlice(state, props.room));
   const messages = slice.messages;
+  const threads = slice.threads;
   const members = slice.members;
   const selfId = slice.selfMemberId;
   const historyCursor = slice.historyCursor;
@@ -128,7 +130,7 @@ export function Transcript(props: { room: string; token: () => string; connectio
   const historySettleTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const inbox = slice.inbox;
-  const ordered = useMemo(() => transcriptMessages(messages), [messages]);
+  const ordered = useMemo(() => transcriptMessages(messages).filter((message) => message.thread_root_id === undefined), [messages]);
   // Support state owns actionability; transcript messages stay the exact
   // contiguous history window and never absorb old correctness outliers.
   const visible = useMemo(() => continuationVisibleMessages(
@@ -590,6 +592,7 @@ export function Transcript(props: { room: string; token: () => string; connectio
             members, selfId, selfHandle, inbox,
             room: props.room, token: props.token, connection: props.connection,
             canPin, canDelete, canRetry,
+            threads, onOpenThread: props.onOpenThread,
           })}
           {transcriptReady && detachedInteractions.length > 0 && (
             <section className="nx-action-tray" aria-label="Needs your response" data-testid="interaction-tray">
@@ -598,6 +601,7 @@ export function Transcript(props: { room: string; token: () => string; connectio
                 members, selfId, selfHandle, inbox,
                 room: props.room, token: props.token, connection: props.connection,
                 canPin, canDelete, canRetry,
+                threads, onOpenThread: props.onOpenThread,
               })}
             </section>
           )}
@@ -682,6 +686,8 @@ function TurnBlock(props: {
   connection: Connection;
   deliveries: Record<string, Delivery>;
   members: Record<string, Member>;
+  threads: Record<number, ThreadSummary>;
+  onOpenThread?: (rootMessageId: number) => void;
 }) {
   const { message, author } = props;
   const isMobile = useIsMobile();
@@ -802,6 +808,22 @@ function TurnBlock(props: {
                     : <Pin size={14} aria-hidden="true" />}
                 </button>
               )}
+              {message.thread_root_id === undefined && props.threads[message.id] === undefined && (
+                <button
+                  className="nx-iconbtn is-quiet"
+                  aria-label="Create thread"
+                  data-testid={`msg-${message.id}-thread`}
+                  onClick={() => {
+                    props.connection.act({
+                      act: 'create_thread',
+                      root_message_id: message.id,
+                    });
+                    props.onOpenThread?.(message.id);
+                  }}
+                >
+                  <MessageSquare size={14} aria-hidden="true" />
+                </button>
+              )}
               {props.canDelete && message.kind === 'chat' && (
                 <DeleteButton messageId={message.id} connection={props.connection} />
               )}
@@ -826,6 +848,13 @@ function TurnBlock(props: {
             : <MessageProse body={message.body} highlightHandle={mentionsMe ? props.viewerHandle : undefined} />}
         {message.attachments !== undefined && message.attachments.length > 0 && (
           <MessageAttachments room={props.room} token={props.token} attachments={message.attachments} />
+        )}
+        {props.threads[message.id] !== undefined && (
+          <ThreadChip
+            room={props.room}
+            summary={props.threads[message.id]!}
+            onClick={() => props.onOpenThread?.(message.id)}
+          />
         )}
       </div>
     </article>
@@ -1371,6 +1400,8 @@ interface TimelineCtx {
   canPin: boolean;
   canDelete: boolean;
   canRetry: boolean;
+  threads: Record<number, ThreadSummary>;
+  onOpenThread?: (rootMessageId: number) => void;
 }
 
 function renderTimeline(entries: TimelineEntry[], ctx: TimelineCtx): ReactNode[] {
@@ -1409,6 +1440,8 @@ function renderTimeline(entries: TimelineEntry[], ctx: TimelineCtx): ReactNode[]
           canPin={ctx.canPin}
           canRetry={ctx.canRetry}
           connection={ctx.connection}
+          threads={ctx.threads}
+          onOpenThread={ctx.onOpenThread}
         />,
       );
       prevAuthor = entry.message.author;
@@ -1444,6 +1477,8 @@ function renderTimeline(entries: TimelineEntry[], ctx: TimelineCtx): ReactNode[]
           canRetry={ctx.canRetry}
           viewerId={ctx.selfId}
           viewerHandle={ctx.selfHandle}
+          threads={ctx.threads}
+          onOpenThread={ctx.onOpenThread}
         />,
       );
       prevAuthor = message.kind === 'system' ? undefined : message.author;
@@ -1467,6 +1502,8 @@ function RunStretch(props: {
   canPin: boolean;
   canRetry: boolean;
   connection: Connection;
+  threads: Record<number, ThreadSummary>;
+  onOpenThread?: (rootMessageId: number) => void;
 }) {
   const { message, author } = props;
   const isMobile = useIsMobile();
@@ -1531,6 +1568,22 @@ function RunStretch(props: {
                   <RotateCcw size={14} aria-hidden="true" />
                 </button>
               )}
+              {props.anchored && message.thread_root_id === undefined && props.threads[message.id] === undefined && (
+                <button
+                  className="nx-iconbtn is-quiet"
+                  aria-label="Create thread"
+                  data-testid={`msg-${message.id}-thread`}
+                  onClick={() => {
+                    props.connection.act({
+                      act: 'create_thread',
+                      root_message_id: message.id,
+                    });
+                    props.onOpenThread?.(message.id);
+                  }}
+                >
+                  <MessageSquare size={14} aria-hidden="true" />
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -1570,6 +1623,13 @@ function RunStretch(props: {
             </p>
           )}
         </div>
+        {props.anchored && props.threads[message.id] !== undefined && (
+          <ThreadChip
+            room={message.room}
+            summary={props.threads[message.id]!}
+            onClick={() => props.onOpenThread?.(message.id)}
+          />
+        )}
       </div>
     </article>
   );

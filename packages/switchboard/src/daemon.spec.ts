@@ -5690,3 +5690,160 @@ describe('manual engine compaction', () => {
   });
 });
 // harn:end manual-compaction-is-an-operator-act
+
+// harn:assume threads-are-in-room-message-groups ref=thread-daemon-regression
+// harn:assume agent-replies-stay-in-their-thread ref=thread-reply-daemon-regression
+describe('threads', () => {
+  const owner = () => daemon.store.getMemberByHandle('eng', 'richard')!;
+
+  const rootMessage = (body = 'the parser is wrong') =>
+    daemon.postHumanMessage('eng', body, { author: owner().id });
+
+  it('titles a thread from its root when nobody named it', () => {
+    const root = rootMessage('the parser is wrong\nsecond line ignored');
+    const summary = daemon.createThread('eng', root.id, owner().id);
+    expect(summary.title).toBe('the parser is wrong');
+    expect(summary.state).toBe('open');
+    expect(daemon.store.threadActivity('eng', root.id).reply_count).toBe(0);
+  });
+
+  it('broadcasts no read position with a thread, so one viewer cannot clear another', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id);
+    const broadcast = frames.map((entry) => entry.frame).findLast((f) => f.type === 'thread');
+    // Shared facts only. Unread is per viewer and never rides a fan-out.
+    expect(broadcast).toMatchObject({ type: 'thread' });
+    expect((broadcast as { thread: { read_through_seq?: number } }).thread.read_through_seq)
+      .toBeUndefined();
+  });
+
+  it('tells the channel a thread was opened without waking an agent', () => {
+    const agent = spawnAgent('thread-watcher');
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id, 'parser rewrite');
+    const marker = daemon.store.listMessages('eng', { limit: 50 })
+      .find((message) => message.kind === 'system' && message.body.includes('parser rewrite'));
+    expect(marker).toBeDefined();
+    expect(marker!.thread_root_id).toBeUndefined(); // the marker belongs to the channel
+    // A system message never routes: the marker itself reached nobody.
+    expect(daemon.store.listDeliveries('eng', { recipient: agent.id })
+      .some((delivery) => delivery.message_id === marker!.id)).toBe(false);
+  });
+
+  it('keeps a threaded post out of the main channel and in its thread', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id);
+    const reply = daemon.postHumanMessage('eng', 'digging into it', {
+      author: owner().id,
+      thread_root_id: root.id,
+    });
+    expect(reply.thread_root_id).toBe(root.id);
+    expect(daemon.store.listThreadMessages('eng', root.id).map((m) => m.id)).toEqual([reply.id]);
+  });
+
+  it('refuses a post into a thread that does not exist', () => {
+    const root = rootMessage();
+    expect(() => daemon.postHumanMessage('eng', 'nowhere', {
+      author: owner().id,
+      thread_root_id: root.id,
+    })).toThrow(/no such thread/);
+  });
+
+  it('refuses a new post into a closed thread', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id);
+    daemon.setThreadState('eng', root.id, 'closed', owner().id);
+    expect(() => daemon.postHumanMessage('eng', 'one more thing', {
+      author: owner().id,
+      thread_root_id: root.id,
+    })).toThrow(/closed/);
+  });
+
+  it('reopens a closed thread and takes posts again', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id);
+    daemon.setThreadState('eng', root.id, 'closed', owner().id);
+    const reopened = daemon.setThreadState('eng', root.id, 'open', owner().id);
+    expect(reopened.state).toBe('open');
+    expect(daemon.postHumanMessage('eng', 'back again', {
+      author: owner().id,
+      thread_root_id: root.id,
+    }).thread_root_id).toBe(root.id);
+  });
+
+  it('answers a thread mention inside the thread', async () => {
+    // Root and thread first: a mentionless post with a live agent in the room
+    // routes to it by the default-recipient rule, which would spend the turn
+    // this test scripts.
+    const root = rootMessage();
+    const agent = spawnAgent('thread-agent');
+    daemon.createThread('eng', root.id, owner().id);
+    fake.enqueue({ kind: 'complete', final_text: 'found it' });
+    daemon.postHumanMessage('eng', `@${agent.handle} take a look`, {
+      author: owner().id,
+      thread_root_id: root.id,
+    });
+    const finalized = await until(() =>
+      runMessages().find((message) => message.run?.status === 'completed'));
+    // The reply the room sees is the terminal output row, wherever the writer put it.
+    expect(resultMessageFor(finalized).thread_root_id).toBe(root.id);
+  });
+
+  it('answers a main-channel mention in the main channel while a thread is open', async () => {
+    const root = rootMessage();
+    const agent = spawnAgent('busy-agent');
+    daemon.createThread('eng', root.id, owner().id);
+    fake.enqueue({ kind: 'complete', final_text: 'about an hour' });
+    daemon.postHumanMessage('eng', `@${agent.handle} what is the ETA?`, { author: owner().id });
+    const finalized = await until(() =>
+      runMessages().find((message) => message.run?.status === 'completed'));
+    // Routing is thread-blind: a reply follows the delivery, not the agent.
+    expect(resultMessageFor(finalized).thread_root_id).toBeUndefined();
+  });
+
+  it('carries the thread into the payload the agent actually receives', async () => {
+    const root = rootMessage();
+    const agent = spawnAgent('payload-agent');
+    daemon.createThread('eng', root.id, owner().id);
+    fake.enqueue({ kind: 'complete', final_text: 'ack' });
+    daemon.postHumanMessage('eng', `@${agent.handle} look here`, {
+      author: owner().id,
+      thread_root_id: root.id,
+    });
+    await until(() => runMessages().find((message) => message.run?.status === 'completed'));
+    const prompt = fake.deliveries.at(-1)?.payload ?? '';
+    expect(prompt).toContain(`thread=#${String(root.id)}`);
+    expect(prompt).toContain('codor post --main');
+  });
+
+  it('emits a thread frame surfaces can render', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id, 'parser rewrite');
+    const frame = frames.map((entry) => entry.frame).findLast((f) => f.type === 'thread');
+    expect(frame).toMatchObject({ type: 'thread', thread: { root_message_id: root.id, title: 'parser rewrite' } });
+  });
+});
+// harn:end agent-replies-stay-in-their-thread
+// harn:end threads-are-in-room-message-groups
+
+// harn:assume thread-unread-is-its-own-durable-cursor ref=thread-unread-daemon-regression
+describe('thread unread is its own cursor', () => {
+  it('survives the parent channel being read to the bottom', () => {
+    const owner = daemon.store.getMemberByHandle('eng', 'richard')!;
+    const reader = daemon.store.addMember('eng', {
+      kind: 'human', handle: 'sam', display_name: 'Sam', role: 'member',
+    });
+    const root = daemon.postHumanMessage('eng', 'the parser is wrong', { author: owner.id });
+    daemon.createThread('eng', root.id, owner.id);
+    daemon.postHumanMessage('eng', 'a reply nobody in the panel has seen', {
+      author: owner.id,
+      thread_root_id: root.id,
+    });
+    daemon.markRoomRead('eng', daemon.store.currentSeq('eng'), reader.id);
+    // Reading the channel says nothing about having opened the thread.
+    expect(daemon.store.threadUnread('eng', root.id, reader.id)).toBeGreaterThan(0);
+    daemon.markThreadRead('eng', root.id, daemon.store.currentSeq('eng'), reader.id);
+    expect(daemon.store.threadUnread('eng', root.id, reader.id)).toBe(0);
+  });
+});
+// harn:end thread-unread-is-its-own-durable-cursor
