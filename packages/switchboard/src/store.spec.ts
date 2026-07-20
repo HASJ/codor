@@ -2204,24 +2204,25 @@ describe('threads', () => {
     const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'root' });
     store.createThread('eng', { rootMessageId: root.id, title: 'Summary', createdBy: owner.id });
 
-    const summary0 = store.threadSummary('eng', root.id);
-    expect(summary0?.reply_count).toBe(0);
-    expect(summary0?.last_ts).toBeUndefined();
-    expect(summary0?.last_author_handle).toBeUndefined();
+    // Activity is derived on demand, never stored on the thread row.
+    const activity0 = store.threadActivity('eng', root.id);
+    expect(activity0.reply_count).toBe(0);
+    expect(activity0.last_ts).toBeUndefined();
+    expect(activity0.last_author_handle).toBeUndefined();
 
     const m1 = store.postMessage('eng', { author: coder.id, kind: 'chat', body: '1', thread_root_id: root.id });
-    const summary1 = store.threadSummary('eng', root.id);
-    expect(summary1?.reply_count).toBe(1);
-    expect(summary1?.last_ts).toBe(m1.ts);
-    expect(summary1?.last_author_handle).toBe('coder');
+    const activity1 = store.threadActivity('eng', root.id);
+    expect(activity1.reply_count).toBe(1);
+    expect(activity1.last_ts).toBe(m1.ts);
+    expect(activity1.last_author_handle).toBe('coder');
 
     // Ignore deleted messages
     const m2 = store.postMessage('eng', { author: owner.id, kind: 'chat', body: '2', thread_root_id: root.id });
     store.deleteMessage('eng', m2.id);
-    const summary2 = store.threadSummary('eng', root.id);
-    expect(summary2?.reply_count).toBe(1);
-    expect(summary2?.last_ts).toBe(m1.ts);
-    expect(summary2?.last_author_handle).toBe('coder');
+    const activity2 = store.threadActivity('eng', root.id);
+    expect(activity2.reply_count).toBe(1);
+    expect(activity2.last_ts).toBe(m1.ts);
+    expect(activity2.last_author_handle).toBe('coder');
   });
 
   it('markThreadRead is monotonic and thread unread is independent of room cursor', () => {
@@ -2234,29 +2235,28 @@ describe('threads', () => {
     const m1 = store.postMessage('eng', { author: alpha.id, kind: 'chat', body: 'reply1', thread_root_id: root.id });
     
     // Check initial unread for owner
-    const summary1 = store.threadSummary('eng', root.id, owner.id);
-    expect(summary1?.unread).toBe(1);
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
 
     // Mark read at m1.seq
     store.markThreadRead('eng', root.id, owner.id, m1.seq);
-    const summary2 = store.threadSummary('eng', root.id, owner.id);
-    expect(summary2?.unread).toBe(0);
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(0);
+    // The cursor itself is what a viewer's own frames carry.
+    expect(store.threadSummary('eng', root.id, owner.id)?.read_through_seq).toBe(m1.seq);
+    // A broadcast summary carries no cursor at all.
+    expect(store.threadSummary('eng', root.id)?.read_through_seq).toBeUndefined();
 
     // Verify monotonicity: lower seq does not move cursor backward
     store.markThreadRead('eng', root.id, owner.id, m1.seq - 1);
-    const summary3 = store.threadSummary('eng', root.id, owner.id);
-    expect(summary3?.unread).toBe(0);
+    expect(store.threadReadCursor('eng', root.id, owner.id)).toBe(m1.seq);
 
     // Post another reply from alpha
     const m2 = store.postMessage('eng', { author: alpha.id, kind: 'chat', body: 'reply2', thread_root_id: root.id });
-    const summary4 = store.threadSummary('eng', root.id, owner.id);
-    expect(summary4?.unread).toBe(1);
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
 
     // Mark ROOM read past m2.seq
     store.markRoomRead('eng', owner.id, m2.seq);
     // Thread unread should STILL be 1 because room read cursor must not clear thread unread
-    const summary5 = store.threadSummary('eng', root.id, owner.id);
-    expect(summary5?.unread).toBe(1);
+    expect(store.threadUnread('eng', root.id, owner.id)).toBe(1);
   });
 
   it('beginTurn inheritance of thread_root_id', () => {

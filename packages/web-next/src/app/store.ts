@@ -271,13 +271,23 @@ export const useClientStore = create<ClientState>((set, get) => ({
             memberHistory: observeMember(current.memberHistory, frame.member),
           };
           break;
-        case 'thread':
+        case 'thread': {
+          // harn:assume thread-unread-is-its-own-durable-cursor ref=client-thread-cursor-merge
+          // A broadcast summary carries no read position, so it must not erase
+          // the one this viewer already has — that would mark an unopened
+          // thread read for everyone the moment somebody replied in it.
+          const known = current.threads[frame.thread.root_message_id];
+          const merged = frame.thread.read_through_seq === undefined && known?.read_through_seq !== undefined
+            ? { ...frame.thread, read_through_seq: known.read_through_seq }
+            : frame.thread;
+          // harn:end thread-unread-is-its-own-durable-cursor
           next = {
             ...current,
             seq: bump,
-            threads: { ...current.threads, [frame.thread.root_message_id]: frame.thread },
+            threads: { ...current.threads, [frame.thread.root_message_id]: merged },
           };
           break;
+        }
         case 'message': {
           const messages = state.activeRoom === roomId
             ? { ...current.messages, [frame.message.id]: frame.message }

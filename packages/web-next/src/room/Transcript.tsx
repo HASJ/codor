@@ -851,6 +851,7 @@ function TurnBlock(props: {
         )}
         {props.threads[message.id] !== undefined && (
           <ThreadChip
+            room={props.room}
             summary={props.threads[message.id]!}
             onClick={() => props.onOpenThread?.(message.id)}
           />
@@ -1624,6 +1625,7 @@ function RunStretch(props: {
         </div>
         {props.anchored && props.threads[message.id] !== undefined && (
           <ThreadChip
+            room={message.room}
             summary={props.threads[message.id]!}
             onClick={() => props.onOpenThread?.(message.id)}
           />

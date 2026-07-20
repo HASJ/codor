@@ -1983,9 +1983,9 @@ export class Daemon {
     if (thread.state === state) return this.emitThread(room, rootMessageId);
     this.store.setThreadState(room, rootMessageId, state);
     const actor = this.store.getMember(room, byMemberId);
-    const summary = this.store.threadSummary(room, rootMessageId);
-    const tail = state === 'closed' && summary?.last_ts !== undefined
-      ? ` · ${String(summary.reply_count)} replies`
+    const activity = this.store.threadActivity(room, rootMessageId);
+    const tail = state === 'closed' && activity.reply_count > 0
+      ? ` · ${String(activity.reply_count)} replies`
       : '';
     this.postSystemMessage(
       room,
@@ -1995,8 +1995,13 @@ export class Daemon {
     return this.emitThread(room, rootMessageId);
   }
 
-  private emitThread(room: string, rootMessageId: number, viewer?: string): ThreadSummary {
-    const summary = this.store.threadSummary(room, rootMessageId, viewer);
+  /**
+   * Broadcasts the SHARED thread facts only. No viewer is passed, on purpose: a
+   * fanned-out summary carrying one viewer's read cursor would hand every other
+   * subscriber somebody else's unread position.
+   */
+  private emitThread(room: string, rootMessageId: number): ThreadSummary {
+    const summary = this.store.threadSummary(room, rootMessageId);
     if (!summary) throw new Error(`no such thread: #${String(rootMessageId)}`);
     this.emit(room, { type: 'thread', seq: this.store.currentSeq(room), thread: summary });
     return summary;
@@ -2010,6 +2015,7 @@ export class Daemon {
       throw new Error(`no such thread: #${String(rootMessageId)}`);
     }
     this.store.markThreadRead(room, rootMessageId, byMemberId, throughSeq);
+    // Addressed to this caller alone — hence the viewer, and hence no broadcast.
     const summary = this.store.threadSummary(room, rootMessageId, byMemberId);
     if (!summary) throw new Error(`no such thread: #${String(rootMessageId)}`);
     return summary;

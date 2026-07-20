@@ -24,24 +24,26 @@ export const ThreadSchema = z.object({
 export type Thread = z.infer<typeof ThreadSchema>;
 
 /**
- * What surfaces render. Reply count and last activity are DERIVED by query at
- * projection time rather than stored on the thread row, so they cannot drift
- * from the messages they describe.
+ * What surfaces render — the SHARED facts only, so this frame is safe to
+ * broadcast. Reply count, last activity and unread are all derived by the
+ * client from the thread's messages, which it already holds: a server-pushed
+ * count would go stale on every reply that did not also push a summary, and a
+ * broadcast count computed for one viewer is wrong for all the others.
  */
 export const ThreadSummarySchema = z.object({
   root_message_id: MessageIdSchema,
   title: z.string().min(1),
   state: ThreadStateSchema,
-  reply_count: z.number().int().nonnegative(),
-  last_ts: TimestampSchema.optional(), // absent until the thread has a reply
-  last_author_handle: z.string().optional(),
-  // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-summary-unread
+  // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-summary-cursor
   /**
-   * Counted against the viewer's own THREAD cursor, never the room cursor:
-   * thread messages are interleaved in the room's seq stream, so reading the
-   * main channel past them would otherwise silently clear the thread.
+   * The viewer's own durable thread cursor, and therefore present ONLY on
+   * frames addressed to one viewer (hydration, and the answer to
+   * mark_thread_read). Unread is everything in the thread above it — counted
+   * against this cursor, never the room's, because thread messages are
+   * interleaved in the room seq stream and reading the channel past them would
+   * otherwise clear a thread nobody opened.
    */
-  unread: z.number().int().nonnegative(),
+  read_through_seq: SeqSchema.optional(),
   // harn:end thread-unread-is-its-own-durable-cursor
 });
 export type ThreadSummary = z.infer<typeof ThreadSummarySchema>;

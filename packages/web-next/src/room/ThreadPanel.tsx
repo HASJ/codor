@@ -7,11 +7,21 @@ import type { Connection } from '@legacy/ws.js';
 import { roomSlice, useClientStore } from '../app/store.js';
 import { relativeTime } from '../primitives/identity.js';
 import { Composer } from './Composer.js';
+import { threadActivity } from './threads.js';
 
-export function ThreadChip(props: { summary: ThreadSummary; onClick: () => void }) {
+export function ThreadChip(props: { room: string; summary: ThreadSummary; onClick: () => void }) {
   const { summary, onClick } = props;
-  const lastActiveStr = summary.last_ts ? ` · last active ${relativeTime(summary.last_ts)}` : '';
-  const text = `${summary.reply_count} ${summary.reply_count === 1 ? 'reply' : 'replies'}${lastActiveStr}`;
+  const slice = useClientStore((state) => roomSlice(state, props.room));
+  // Derived, not pushed: the chip has to move on the very next reply, and the
+  // server deliberately broadcasts no counts (see threads.ts).
+  const activity = useMemo(() => threadActivity(
+    slice.messages,
+    slice.members,
+    summary.root_message_id,
+    { id: slice.selfMemberId, readThroughSeq: summary.read_through_seq ?? 0 },
+  ), [slice.messages, slice.members, slice.selfMemberId, summary]);
+  const lastActiveStr = activity.lastTs ? ` · last active ${relativeTime(activity.lastTs)}` : '';
+  const text = `${activity.replyCount} ${activity.replyCount === 1 ? 'reply' : 'replies'}${lastActiveStr}`;
   return (
     <button
       className="nx-thread-chip"
@@ -19,9 +29,9 @@ export function ThreadChip(props: { summary: ThreadSummary; onClick: () => void 
       data-testid={`thread-chip-${summary.root_message_id}`}
     >
       <span className="nx-thread-chip-text">{text}</span>
-      {summary.unread > 0 && (
+      {activity.unread > 0 && (
         <span className="nx-thread-unread-badge" data-testid={`thread-unread-${summary.root_message_id}`}>
-          {summary.unread}
+          {activity.unread}
         </span>
       )}
     </button>

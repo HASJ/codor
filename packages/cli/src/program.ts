@@ -887,37 +887,44 @@ export function createProgram(context: CliContext = {}): Command {
           return;
         }
 
-        const formatLastTs = (ts?: string): string => {
-          if (!ts) return '';
-          if (ts.length >= 16) {
-            return ts.slice(0, 16) + 'Z';
-          }
-          return ts;
+        const formatLastTs = (ts: string): string => (ts.length >= 16 ? `${ts.slice(0, 16)}Z` : ts);
+
+        // Activity is derived from the messages this sync already carries: the
+        // server sends only the shared thread facts, so a count in a frame could
+        // never stay true past the next reply.
+        const activity = (rootMessageId: number) => {
+          const replies = [...snapshot.messages.values()]
+            .filter((message) => message.thread_root_id === rootMessageId && message.deleted !== true)
+            .sort((left, right) => left.id - right.id);
+          const last = replies.at(-1);
+          return {
+            count: replies.length,
+            ...(last !== undefined && {
+              lastTs: last.ts,
+              lastHandle: snapshot.members.get(last.author)?.handle,
+            }),
+          };
         };
 
-        const sorted = filtered.sort((a, b) => {
-          const aTime = a.last_ts ?? '';
-          const bTime = b.last_ts ?? '';
-          if (aTime && bTime) {
-            return bTime.localeCompare(aTime);
-          }
-          if (aTime) return -1;
-          if (bTime) return 1;
-          return b.root_message_id - a.root_message_id;
+        const sorted = filtered.sort((left, right) => {
+          const leftTs = activity(left.root_message_id).lastTs ?? '';
+          const rightTs = activity(right.root_message_id).lastTs ?? '';
+          if (leftTs && rightTs) return rightTs.localeCompare(leftTs);
+          if (leftTs) return -1;
+          if (rightTs) return 1;
+          return right.root_message_id - left.root_message_id;
         });
 
         for (const thread of sorted) {
-          const lastPart = thread.last_author_handle && thread.last_ts
-            ? `last @${thread.last_author_handle} ${formatLastTs(thread.last_ts)}`
-            : '';
+          const { count, lastTs, lastHandle } = activity(thread.root_message_id);
           const parts = [
             `#${thread.root_message_id}`,
             thread.title,
             thread.state,
-            `${thread.reply_count} replies`,
+            `${count} replies`,
           ];
-          if (lastPart) {
-            parts.push(lastPart);
+          if (lastTs !== undefined && lastHandle !== undefined) {
+            parts.push(`last @${lastHandle} ${formatLastTs(lastTs)}`);
           }
           out(parts.join('\t'));
         }

@@ -733,13 +733,16 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     if (!viewer) return;
     if (!daemon.store.getRoom(room)) return reply.code(404).send({ error: `no such room ${room}` });
     const query = req.query as { state?: string };
-    // Unread is the caller's own, so the caller's member id decides it.
-    const threads = daemon.store.listThreadSummaries(room, viewer.id);
-    return reply.send({
-      threads: query.state === undefined
-        ? threads
-        : threads.filter((thread) => thread.state === query.state),
-    });
+    // One response to one caller, so this may carry the caller's own unread and
+    // the derived activity the socket deliberately leaves to the client.
+    const threads = daemon.store.listThreadSummaries(room, viewer.id)
+      .filter((thread) => query.state === undefined || thread.state === query.state)
+      .map((thread) => ({
+        ...thread,
+        ...daemon.store.threadActivity(room, thread.root_message_id),
+        unread: daemon.store.threadUnread(room, thread.root_message_id, viewer.id),
+      }));
+    return reply.send({ threads });
   });
 
   /**

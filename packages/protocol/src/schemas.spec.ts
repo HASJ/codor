@@ -1418,10 +1418,7 @@ describe('threads are in-room message groups', () => {
     root_message_id: 38,
     title: 'new-feature',
     state: 'open',
-    reply_count: 3,
-    last_ts: TS,
-    last_author_handle: 'codex',
-    unread: 2,
+    read_through_seq: 91,
   } as const;
 
   it('round-trips a thread', () => {
@@ -1436,10 +1433,12 @@ describe('threads are in-room message groups', () => {
     expect(ThreadSchema.parse(thread).closed_ts).toBeUndefined();
   });
 
-  it('describes an empty thread without inventing activity', () => {
-    const empty = ThreadSummarySchema.parse({ ...summary, reply_count: 0, last_ts: undefined, last_author_handle: undefined });
-    expect(empty.last_ts).toBeUndefined();
-    expect(empty.reply_count).toBe(0);
+  it('carries no read position on a summary meant for every subscriber', () => {
+    // A broadcast summary is the shared facts only: one viewer's cursor fanned
+    // out would tell every other viewer they had read what they have not.
+    const broadcast = ThreadSummarySchema.parse({ ...summary, read_through_seq: undefined });
+    expect(broadcast.read_through_seq).toBeUndefined();
+    expect(broadcast.title).toBe('new-feature');
   });
 
   it('rejects a state the protocol does not define', () => {

@@ -28,7 +28,7 @@ vi.mock('./Composer.js', () => ({
 }));
 
 import { resetClientStoreForTest, useClientStore } from '../app/store.js';
-import { ThreadPanel } from './ThreadPanel.js';
+import { ThreadChip, ThreadPanel } from './ThreadPanel.js';
 
 const mockConnection = {
   post: vi.fn(),
@@ -178,3 +178,63 @@ describe('ThreadPanel', () => {
     expect(markup).toContain('Close Thread');
   });
 });
+
+// harn:assume threads-are-in-room-message-groups ref=chip-derives-from-messages-regression
+describe('ThreadChip', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetClientStoreForTest();
+  });
+
+  afterEach(() => {
+    resetClientStoreForTest();
+  });
+
+  const summary = { root_message_id: 1, title: 'My Thread', state: 'open' } as ThreadSummary;
+
+  const chip = (rendered: ThreadSummary = summary) => renderToStaticMarkup(
+    <ThreadChip room="eng" summary={rendered} onClick={vi.fn()} />,
+  );
+
+  it('counts the replies it can see rather than a number the server pushed', () => {
+    // The server broadcasts no counts, so a chip that waited for one would sit
+    // frozen at hydration while the thread filled up.
+    mockRoomState(
+      {
+        1: { id: 1, room: 'eng', author: 'user1', kind: 'chat', body: 'root', seq: 1 } as any,
+        2: { id: 2, room: 'eng', author: 'user2', kind: 'chat', body: 'a', seq: 2, thread_root_id: 1 } as any,
+        3: { id: 3, room: 'eng', author: 'user2', kind: 'chat', body: 'b', seq: 3, thread_root_id: 1 } as any,
+        4: { id: 4, room: 'eng', author: 'user2', kind: 'chat', body: 'elsewhere', seq: 4 } as any,
+      },
+      { 1: summary },
+    );
+    expect(chip()).toContain('2 replies');
+  });
+
+  it('counts everything above the viewer cursor as unread, except their own', () => {
+    mockRoomState(
+      {
+        1: { id: 1, room: 'eng', author: 'user1', kind: 'chat', body: 'root', seq: 1 } as any,
+        2: { id: 2, room: 'eng', author: 'user2', kind: 'chat', body: 'read', seq: 2, thread_root_id: 1 } as any,
+        3: { id: 3, room: 'eng', author: 'user2', kind: 'chat', body: 'new', seq: 5, thread_root_id: 1 } as any,
+        4: { id: 4, room: 'eng', author: 'me', kind: 'chat', body: 'mine', seq: 6, thread_root_id: 1 } as any,
+      },
+      { 1: { ...summary, read_through_seq: 3 } as ThreadSummary },
+    );
+    const markup = chip({ ...summary, read_through_seq: 3 });
+    expect(markup).toContain('thread-unread-1');
+    expect(markup).toContain('>1<'); // one peer message above the cursor; the viewer's own never counts
+  });
+
+  it('shows no badge when the cursor covers the thread', () => {
+    mockRoomState(
+      {
+        1: { id: 1, room: 'eng', author: 'user1', kind: 'chat', body: 'root', seq: 1 } as any,
+        2: { id: 2, room: 'eng', author: 'user2', kind: 'chat', body: 'read', seq: 2, thread_root_id: 1 } as any,
+      },
+      { 1: { ...summary, read_through_seq: 9 } as ThreadSummary },
+    );
+    expect(chip({ ...summary, read_through_seq: 9 })).not.toContain('thread-unread-1');
+  });
+});
+// harn:end threads-are-in-room-message-groups

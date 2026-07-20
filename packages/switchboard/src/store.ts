@@ -3906,57 +3906,67 @@ export class Store {
     return rows.reverse().map(messageFromRow);
   }
 
+  /**
+   * The shared facts, plus the viewer's own cursor when one is named. Reply
+   * count and last activity are NOT here: a client holds the thread's messages
+   * already and derives both, so they stay live between summary frames instead
+   * of freezing at whatever the last push said.
+   */
   threadSummary(room: string, rootMessageId: number, viewer?: string): ThreadSummary | undefined {
     const thread = this.getThread(room, rootMessageId);
     if (!thread) return undefined;
-
-    const summaryRow = this.db.prepare(
-      `SELECT COUNT(*) AS reply_count,
-              MAX(id) AS last_id
-       FROM messages
-       WHERE room = ? AND thread_root_id = ? AND deleted = 0`
-    ).get(room, rootMessageId) as { reply_count: number; last_id: number | null };
-
-    let lastTs: string | undefined;
-    let lastAuthorHandle: string | undefined;
-
-    if (summaryRow.last_id !== null) {
-      const lastMsgRow = this.db.prepare(
-        `SELECT messages.ts, members.handle
-         FROM messages
-         LEFT JOIN members ON members.room = messages.room AND members.id = messages.author
-         WHERE messages.room = ? AND messages.id = ?`
-      ).get(room, summaryRow.last_id) as { ts: string; handle: string | null } | undefined;
-      
-      if (lastMsgRow) {
-        lastTs = lastMsgRow.ts;
-        lastAuthorHandle = lastMsgRow.handle ?? undefined;
-      }
-    }
-
-    let unread = 0;
-    if (viewer) {
-      const cursor = this.db.prepare(
-        `SELECT through_seq FROM thread_read_cursors
-         WHERE room = ? AND root_message_id = ? AND viewer = ?`
-      ).get(room, rootMessageId, viewer) as { through_seq: number } | undefined;
-      const throughSeq = cursor?.through_seq ?? 0;
-
-      const unreadRow = this.db.prepare(
-        `SELECT COUNT(*) AS count FROM messages
-         WHERE room = ? AND thread_root_id = ? AND deleted = 0 AND seq > ? AND author <> ?`
-      ).get(room, rootMessageId, throughSeq, viewer) as { count: number };
-      unread = unreadRow.count;
-    }
-
     return {
       root_message_id: rootMessageId,
       title: thread.title,
       state: thread.state,
-      reply_count: summaryRow.reply_count,
-      last_ts: lastTs,
-      last_author_handle: lastAuthorHandle,
-      unread,
+      // harn:assume thread-unread-is-its-own-durable-cursor ref=thread-summary-cursor-store
+      // Only ever the caller's own cursor, so a broadcast summary (no viewer)
+      // cannot hand every subscriber somebody else's read position.
+      ...(viewer !== undefined && { read_through_seq: this.threadReadCursor(room, rootMessageId, viewer) }),
+      // harn:end thread-unread-is-its-own-durable-cursor
+    };
+  }
+
+  threadReadCursor(room: string, rootMessageId: number, viewer: string): number {
+    const cursor = this.db.prepare(
+      `SELECT through_seq FROM thread_read_cursors
+       WHERE room = ? AND root_message_id = ? AND viewer = ?`,
+    ).get(room, rootMessageId, viewer) as { through_seq: number } | undefined;
+    return cursor?.through_seq ?? 0;
+  }
+
+  /** Unread for one viewer: everything above their cursor that is not theirs. */
+  threadUnread(room: string, rootMessageId: number, viewer: string): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM messages
+       WHERE room = ? AND thread_root_id = ? AND deleted = 0 AND seq > ? AND author <> ?`,
+    ).get(room, rootMessageId, this.threadReadCursor(room, rootMessageId, viewer), viewer) as
+      { count: number };
+    return row.count;
+  }
+
+  /** Reply count and last activity, derived — the CLI and REST render these. */
+  threadActivity(room: string, rootMessageId: number): {
+    reply_count: number;
+    last_ts?: string;
+    last_author_handle?: string;
+  } {
+    const totals = this.db.prepare(
+      `SELECT COUNT(*) AS reply_count, MAX(id) AS last_id
+       FROM messages
+       WHERE room = ? AND thread_root_id = ? AND deleted = 0`,
+    ).get(room, rootMessageId) as { reply_count: number; last_id: number | null };
+    if (totals.last_id === null) return { reply_count: totals.reply_count };
+    const last = this.db.prepare(
+      `SELECT messages.ts, members.handle
+       FROM messages
+       LEFT JOIN members ON members.room = messages.room AND members.id = messages.author
+       WHERE messages.room = ? AND messages.id = ?`,
+    ).get(room, totals.last_id) as { ts: string; handle: string | null } | undefined;
+    return {
+      reply_count: totals.reply_count,
+      ...(last !== undefined && { last_ts: last.ts }),
+      ...(last?.handle != null && { last_author_handle: last.handle }),
     };
   }
 

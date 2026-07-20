@@ -5704,7 +5704,17 @@ describe('threads', () => {
     const summary = daemon.createThread('eng', root.id, owner().id);
     expect(summary.title).toBe('the parser is wrong');
     expect(summary.state).toBe('open');
-    expect(summary.reply_count).toBe(0);
+    expect(daemon.store.threadActivity('eng', root.id).reply_count).toBe(0);
+  });
+
+  it('broadcasts no read position with a thread, so one viewer cannot clear another', () => {
+    const root = rootMessage();
+    daemon.createThread('eng', root.id, owner().id);
+    const broadcast = frames.map((entry) => entry.frame).findLast((f) => f.type === 'thread');
+    // Shared facts only. Unread is per viewer and never rides a fan-out.
+    expect(broadcast).toMatchObject({ type: 'thread' });
+    expect((broadcast as { thread: { read_through_seq?: number } }).thread.read_through_seq)
+      .toBeUndefined();
   });
 
   it('tells the channel a thread was opened without waking an agent', () => {
@@ -5830,11 +5840,10 @@ describe('thread unread is its own cursor', () => {
       thread_root_id: root.id,
     });
     daemon.markRoomRead('eng', daemon.store.currentSeq('eng'), reader.id);
-    const summary = daemon.store.threadSummary('eng', root.id, reader.id)!;
     // Reading the channel says nothing about having opened the thread.
-    expect(summary.unread).toBeGreaterThan(0);
+    expect(daemon.store.threadUnread('eng', root.id, reader.id)).toBeGreaterThan(0);
     daemon.markThreadRead('eng', root.id, daemon.store.currentSeq('eng'), reader.id);
-    expect(daemon.store.threadSummary('eng', root.id, reader.id)!.unread).toBe(0);
+    expect(daemon.store.threadUnread('eng', root.id, reader.id)).toBe(0);
   });
 });
 // harn:end thread-unread-is-its-own-durable-cursor
