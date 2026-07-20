@@ -11,6 +11,7 @@ import {
   type Message,
   type RunSearchHit,
   type ServerFrame,
+  type ThreadSummary,
 } from '@codor/protocol';
 import { Command, Option } from 'commander';
 import {
@@ -149,6 +150,7 @@ interface RoomSnapshot {
   members: Map<string, Member>;
   messages: Map<number, Message>;
   deliveries: Map<string, Delivery>;
+  threads: Map<number, ThreadSummary>;
 }
 
 // harn:assume cli-waits-consume-only-matching-deliveries ref=collaboration-room-sync
@@ -157,6 +159,7 @@ async function syncRoom(client: ProtocolClient, room: string): Promise<RoomSnaps
   const members = new Map<string, Member>();
   const messages = new Map<number, Message>();
   const deliveries = new Map<string, Delivery>();
+  const threads = new Map<number, ThreadSummary>();
   client.send({ type: 'subscribe', room, since_seq: 0 });
   for (;;) {
     const frame = await client.next();
@@ -165,9 +168,10 @@ async function syncRoom(client: ProtocolClient, room: string): Promise<RoomSnaps
     else if (frame.type === 'member') members.set(frame.member.id, frame.member);
     else if (frame.type === 'message') messages.set(frame.message.id, frame.message);
     else if (frame.type === 'inbox') deliveries.set(frame.delivery.id, frame.delivery);
+    else if (frame.type === 'thread') threads.set(frame.thread.root_message_id, frame.thread);
     else if (frame.type === 'sync_complete') {
       if (!self) throw new Error('channel subscription did not identify the caller');
-      return { self, members, messages, deliveries };
+      return { self, members, messages, deliveries, threads };
     }
   }
 }
@@ -538,9 +542,22 @@ export function createProgram(context: CliContext = {}): Command {
     .option('-r, --channel <channel>', 'channel id; defaults to CODOR_CHANNEL')
     .option('--wait', 'wait for the first direct reply from an addressed member')
     .option('--timeout <seconds>', 'wait timeout in seconds', (value) => parsePositiveNumber(value, '--timeout'), 300)
+    .option('--thread <id>', 'post into a thread', (value) => parsePositiveNumber(value, '--thread'))
+    .option('--main', 'post to the main channel instead of the thread you are working in')
     .argument('<message>')
     // harn:assume cli-waits-consume-only-matching-deliveries ref=post-wait-command
-    .action(async (message: string, options: OptionalChannelOptions & { wait?: boolean; timeout: number }) => {
+    .action(async (
+      message: string,
+      options: OptionalChannelOptions & {
+        wait?: boolean;
+        timeout: number;
+        thread?: number;
+        main?: boolean;
+      },
+    ) => {
+      if (options.thread !== undefined && options.main) {
+        throw new Error('Cannot specify both --thread and --main');
+      }
       await withClient(async (client) => {
         const room = channel(options);
         const initial = await syncRoom(client, room);
@@ -550,6 +567,7 @@ export function createProgram(context: CliContext = {}): Command {
           room,
           body: message,
           ...(options.wait && { awaiting_reply: true }),
+          ...(options.thread !== undefined && { thread_root_id: options.thread }),
         });
         let posted: Message;
         for (;;) {
@@ -559,13 +577,18 @@ export function createProgram(context: CliContext = {}): Command {
             frame.type === 'message' &&
             frame.message.id > lastMessageId &&
             frame.message.author === initial.self &&
-            frame.message.body === message
+            frame.message.body === message &&
+            frame.message.thread_root_id === options.thread
           ) {
             posted = frame.message;
             break;
           }
         }
-        out(`posted #${posted.id}`);
+        if (posted.thread_root_id !== undefined) {
+          out(`posted #${posted.id} in thread #${posted.thread_root_id}`);
+        } else {
+          out(`posted #${posted.id}`);
+        }
         if (!options.wait) return;
         if (!env.CODOR_MEMBER_TOKEN) throw new Error('post --wait requires CODOR_MEMBER_TOKEN');
         const peers = [...new Set(posted.mentions.map((mention) => mention.member_id))]
@@ -613,6 +636,7 @@ export function createProgram(context: CliContext = {}): Command {
     .option('--until-mention <handle>', 'stop after consuming an own delivery directly mentioning handle')
     .option('--until-any', 'stop after consuming any queued own delivery')
     .option('--timeout <seconds>', 'until timeout in seconds', (value) => parsePositiveNumber(value, '--timeout'), 300)
+    .option('--thread <id>', 'tail only a specific thread', (value) => parsePositiveNumber(value, '--thread'))
     // harn:assume cli-waits-consume-only-matching-deliveries ref=tail-wait-command
     .action(async (options: OptionalChannelOptions & {
       once?: boolean;
@@ -620,6 +644,7 @@ export function createProgram(context: CliContext = {}): Command {
       untilMention?: string;
       untilAny?: boolean;
       timeout: number;
+      thread?: number;
     }) => {
       await withClient(async (client) => {
         const room = channel(options);
@@ -627,6 +652,11 @@ export function createProgram(context: CliContext = {}): Command {
         const print = (frame: ServerFrame): void => {
           if (frame.type === 'member') members.set(frame.member.id, frame.member);
           if (frame.type !== 'message') return;
+          if (options.thread !== undefined) {
+            if (frame.message.thread_root_id !== options.thread && frame.message.id !== options.thread) {
+              return;
+            }
+          }
           const author = members.get(frame.message.author)?.handle ?? frame.message.author;
           // harn:assume continuation-writer-follows-journaled-output-ownership ref=continuation-cli-tail
           if (frame.message.kind === 'run') {
@@ -837,6 +867,59 @@ export function createProgram(context: CliContext = {}): Command {
             out(`@${member.handle}\t${member.state ?? member.kind}\t${member.harness ?? '-'}`);
           }
           return;
+        }
+      });
+    });
+
+  program
+    .command('threads')
+    .option('-r, --channel <channel>', 'channel id; defaults to CODOR_CHANNEL')
+    .option('--all', 'include closed threads')
+    .action(async (options: OptionalChannelOptions & { all?: boolean }) => {
+      await withClient(async (client) => {
+        const room = channel(options);
+        const snapshot = await syncRoom(client, room);
+        const threads = [...snapshot.threads.values()];
+        const filtered = options.all ? threads : threads.filter((t) => t.state === 'open');
+
+        if (filtered.length === 0) {
+          out('no threads');
+          return;
+        }
+
+        const formatLastTs = (ts?: string): string => {
+          if (!ts) return '';
+          if (ts.length >= 16) {
+            return ts.slice(0, 16) + 'Z';
+          }
+          return ts;
+        };
+
+        const sorted = filtered.sort((a, b) => {
+          const aTime = a.last_ts ?? '';
+          const bTime = b.last_ts ?? '';
+          if (aTime && bTime) {
+            return bTime.localeCompare(aTime);
+          }
+          if (aTime) return -1;
+          if (bTime) return 1;
+          return b.root_message_id - a.root_message_id;
+        });
+
+        for (const thread of sorted) {
+          const lastPart = thread.last_author_handle && thread.last_ts
+            ? `last @${thread.last_author_handle} ${formatLastTs(thread.last_ts)}`
+            : '';
+          const parts = [
+            `#${thread.root_message_id}`,
+            thread.title,
+            thread.state,
+            `${thread.reply_count} replies`,
+          ];
+          if (lastPart) {
+            parts.push(lastPart);
+          }
+          out(parts.join('\t'));
         }
       });
     });

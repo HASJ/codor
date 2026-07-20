@@ -154,6 +154,7 @@ describe('@codor/cli', () => {
       'status',
       'search',
       'members',
+      'threads',
       'join',
       'adopt',
       'mirror-hook',
@@ -713,6 +714,75 @@ describe('@codor/cli', () => {
     output = [];
     await cli('members', '-r', 'eng');
     expect(output.some((line) => line.startsWith('@reviewer\tidle\tfake'))).toBe(true);
+  });
+
+  it('supports thread operations: post, tail, and list threads', async () => {
+    // 1. empty prints no threads
+    output = [];
+    await cli('threads', '-r', 'eng');
+    expect(output).toEqual(['no threads']);
+
+    // Seed messages
+    const author = daemon.ownerOf('eng').id;
+    const msg1 = daemon.store.postMessage('eng', {
+      author,
+      kind: 'chat',
+      body: 'root message 1',
+    });
+    const msg2 = daemon.store.postMessage('eng', {
+      author,
+      kind: 'chat',
+      body: 'main channel message',
+    });
+
+    // Create an open thread on msg1
+    daemon.store.createThread('eng', {
+      rootMessageId: msg1.id,
+      title: 'thread-one',
+      createdBy: author,
+    });
+
+    // 2. post --thread sends thread_root_id and reports the thread in its output
+    output = [];
+    await cli('post', '-r', 'eng', '--thread', String(msg1.id), 'threaded message in thread one');
+    expect(output).toEqual([`posted #3 in thread #${msg1.id}`]);
+
+    // 3. post --thread + --main together is refused with a clear error
+    await expect(cli('post', '-r', 'eng', '--thread', String(msg1.id), '--main', 'cannot post'))
+      .rejects.toThrow('Cannot specify both --thread and --main');
+
+    // 4. tail --thread prints only that thread's messages plus the root
+    output = [];
+    await cli('tail', '-r', 'eng', '--once', '--thread', String(msg1.id));
+    const outputStr = output.join('\n');
+    expect(outputStr).toContain('root message 1');
+    expect(outputStr).toContain('threaded message in thread one');
+    expect(outputStr).not.toContain('main channel message');
+
+    // Seed another message and thread for open vs closed testing
+    const msg4 = daemon.store.postMessage('eng', {
+      author,
+      kind: 'chat',
+      body: 'root message 4',
+    });
+    daemon.store.createThread('eng', {
+      rootMessageId: msg4.id,
+      title: 'thread-two',
+      createdBy: author,
+    });
+    daemon.store.setThreadState('eng', msg4.id, 'closed');
+
+    // 5. threads lists open threads, --all includes closed ones
+    output = [];
+    await cli('threads', '-r', 'eng');
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain(`#${msg1.id}\tthread-one\topen\t1 replies\tlast @richard`);
+
+    output = [];
+    await cli('threads', '-r', 'eng', '--all');
+    expect(output).toHaveLength(2);
+    expect(output[0]).toContain(`#${msg1.id}\tthread-one\topen\t1 replies\tlast @richard`);
+    expect(output[1]).toBe(`#${msg4.id}\tthread-two\tclosed\t0 replies`);
   });
 
   // harn:assume continuation-writer-follows-journaled-output-ownership ref=continuation-cli-regression
