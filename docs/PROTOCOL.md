@@ -213,16 +213,20 @@ Thread {
   closed_ts?: string
 }
 
-ThreadSummary {            // what surfaces render; counts are derived by query, never stored
+ThreadSummary {            // the SHARED facts — safe to broadcast
   root_message_id: number
   title: string
   state: 'open' | 'closed'
-  reply_count: number
-  last_ts?: string
-  last_author_handle?: string
-  unread: number           // against the viewer's THREAD cursor, never the channel cursor
+  read_through_seq?: number // the VIEWER's own thread cursor; present only on frames
+                            // addressed to one viewer (hydration, mark_thread_read)
 }
 ```
+
+Reply count, last activity and unread are **derived by the client** from the thread's own
+messages, which every subscriber already receives; they are not in the frame. A pushed count
+would freeze until the next summary frame (a reply emits only a `message` frame), and a count
+or cursor computed for one viewer is wrong for every other viewer a broadcast reaches. The
+REST list is a single answer to a single caller, so it does carry both.
 
 Rules: threads never nest (a message carrying `thread_root_id` cannot be a root); a closed
 thread refuses NEW posts, while a turn that inherited its thread when it started still lands

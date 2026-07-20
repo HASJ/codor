@@ -68,7 +68,12 @@ Rules that keep it small:
   commented in the house style ("absent is the additive main-channel default").
 - New `thread.ts`:
   - `ThreadSchema` — `{ room, root_message_id, title, state: 'open'|'closed', created_by, created_ts, closed_ts? }`
-  - `ThreadSummarySchema` — the projection surfaces render: `{ root_message_id, title, state, reply_count, last_ts?, last_author_handle?, unread }`
+  - `ThreadSummarySchema` — the SHARED facts a frame may broadcast:
+    `{ root_message_id, title, state, read_through_seq? }`. Reply count, last
+    activity and unread are derived by each client from the thread messages it
+    already holds; `read_through_seq` rides only frames addressed to one viewer
+    (hydration, and the answer to `mark_thread_read`), because a broadcast cursor
+    would hand every subscriber somebody else's read position.
   - export both from `index.ts`.
 - `ws.ts`:
   - `PostFrameSchema` gains `thread_root_id: MessageIdSchema.optional()`.

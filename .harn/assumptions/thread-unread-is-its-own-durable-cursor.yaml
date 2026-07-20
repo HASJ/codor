@@ -1,11 +1,13 @@
 id: thread-unread-is-its-own-durable-cursor
-hash: a-694887a3a74f
+hash: a-cdb08b12ce23
 title: Reading a channel never clears a thread nobody opened
 state: active
 statement: Thread unread must be counted against a durable per-viewer thread cursor
   advanced only by mark_thread_read and never moved backwards, because thread
   messages are interleaved in the room's single seq stream and the room cursor
-  would therefore clear a thread the viewer never opened.
+  would therefore clear a thread the viewer never opened; that cursor may travel
+  only on frames addressed to one viewer, never on a broadcast, and a client must
+  keep the cursor it already holds when a cursorless summary arrives.
 depends_on:
   - human-room-read-cursors-are-durable-and-monotonic
   - threads-are-in-room-message-groups
