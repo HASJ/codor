@@ -152,6 +152,26 @@ describe('room-keyed client state', () => {
   });
 });
 
+describe('mergeThreadPage', () => {
+  it('brings thread replies in without moving the channel history floor', () => {
+    const store = useClientStore.getState();
+    store.setActiveRoom('eng');
+    store.applyFrame(frame({ type: 'self', member_id: 'me' }), 'eng');
+    store.applyFrame(frame({ type: 'room', seq: 0, room: room('eng') }), 'eng');
+    store.applyFrame(frame({ type: 'message', seq: 30, message: message('eng', 30) }), 'eng');
+    store.applyFrame(frame({ type: 'sync_complete', seq: 30, history_floor: 30 }), 'eng');
+
+    // An old thread reply, far below the floor the transcript actually holds.
+    store.mergeThreadPage('eng', [{ ...message('eng', 4), thread_root_id: 2 }]);
+
+    const slice = roomSlice(useClientStore.getState(), 'eng');
+    expect(slice.messages[4]).toBeDefined(); // the chip and the panel both read this map
+    // Threaded rows are hidden from the transcript, so claiming the channel is
+    // loaded back to #4 would make "load older" skip everything between.
+    expect(slice.historyCursor).toBe(30);
+  });
+});
+
 describe('resubscribe preserves a hydrated, paged room', () => {
   it('keeps paged-in rows, the cursor, and support across a second sync', () => {
     const store = useClientStore.getState();

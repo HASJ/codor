@@ -45,6 +45,7 @@ interface ClientState {
   roomList: Room[];
   applyFrame(frame: ServerFrame, fallbackRoom?: string): void;
   mergeHistoryPage(room: string, messages: Message[]): void;
+  mergeThreadPage(room: string, messages: Message[]): void;
   setActiveRoom(room: string): void;
   setConnected(connected: boolean): void;
   reset(): void;
@@ -374,6 +375,33 @@ export const useClientStore = create<ClientState>((set, get) => ({
       };
     });
   },
+
+  // harn:assume threads-are-in-room-message-groups ref=client-thread-page-merge
+  // A thread page lands in the room's one message map — the chip and the panel
+  // both derive from it, so a panel-local copy would leave the chip lying about
+  // the reply count. It deliberately does NOT move `historyCursor`: these
+  // messages are hidden from the main transcript, so pulling the floor down to
+  // an old thread reply would tell the transcript it holds history it never
+  // fetched, and its "load older" would skip that stretch of the channel.
+  mergeThreadPage: (roomId, messages) => {
+    set((state) => {
+      const current = state.rooms[roomId] ?? freshRoom();
+      if (messages.length === 0) return {};
+      return {
+        rooms: {
+          ...state.rooms,
+          [roomId]: {
+            ...current,
+            messages: {
+              ...current.messages,
+              ...Object.fromEntries(messages.map((message) => [message.id, message])),
+            },
+          },
+        },
+      };
+    });
+  },
+  // harn:end threads-are-in-room-message-groups
 
   setActiveRoom: (roomId) => {
     set((state) => {

@@ -1,13 +1,16 @@
 import type { Message, ThreadSummary } from '@codor/protocol';
 import { X } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Connection } from '@legacy/ws.js';
 
 import { roomSlice, useClientStore } from '../app/store.js';
 import { relativeTime } from '../primitives/identity.js';
 import { Composer } from './Composer.js';
-import { threadActivity } from './threads.js';
+import { fetchThreadMessages, threadActivity } from './threads.js';
+
+/** One page of thread history; the daemon caps `limit` at 100. */
+const THREAD_PAGE_SIZE = 50;
 
 export function ThreadChip(props: { room: string; summary: ThreadSummary; onClick: () => void }) {
   const { summary, onClick } = props;
@@ -77,6 +80,40 @@ export function ThreadPanel(props: {
     if (threadMessages.length === 0) return 0;
     return Math.max(...threadMessages.map((m) => m.seq));
   }, [threadMessages]);
+
+  const [hasOlder, setHasOlder] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const fetchedRootRef = useRef<string>();
+
+  const loadPage = (before?: number): void => {
+    setHistoryBusy(true);
+    void fetchThreadMessages(
+      props.room,
+      props.rootMessageId,
+      { limit: THREAD_PAGE_SIZE, ...(before !== undefined && { before }) },
+      props.token(),
+    )
+      .then((page) => {
+        useClientStore.getState().mergeThreadPage(props.room, page.messages);
+        setHasOlder(page.has_more);
+        setHistoryBusy(false);
+      })
+      .catch(() => {
+        // The socket-hydrated tail still renders; only the older stretch is missing.
+        setHistoryBusy(false);
+      });
+  };
+
+  useEffect(() => {
+    // Opening a thread reads its OWN history: the socket hydrates a bounded tail
+    // of the room, so an old thread arrives with only the replies that happened
+    // to fall inside it.
+    const key = `${props.room}:${String(props.rootMessageId)}`;
+    if (fetchedRootRef.current === key) return;
+    fetchedRootRef.current = key;
+    loadPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.room, props.rootMessageId]);
 
   const lastMarkedSeqRef = useRef(0);
   const readTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -154,6 +191,16 @@ export function ThreadPanel(props: {
 
       <div className="nx-thread-body" data-testid="thread-body">
         {rootMsg && <SimpleMessageRow message={rootMsg} handle={handleOf(rootMsg.author)} isRoot={true} />}
+        {hasOlder && (
+          <button
+            className="nx-btn is-quiet nx-thread-older"
+            data-testid="thread-load-older"
+            disabled={historyBusy}
+            onClick={() => { loadPage(threadMessages[0]?.id); }}
+          >
+            {historyBusy ? 'Loading…' : 'Load earlier replies'}
+          </button>
+        )}
         {threadMessages.map((msg) => (
           <SimpleMessageRow key={msg.id} message={msg} handle={handleOf(msg.author)} />
         ))}

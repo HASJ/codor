@@ -2217,6 +2217,11 @@
   gap: var(--sp-3);
 }
 
+.nx-thread-older {
+  align-self: center;
+  font: var(--t-caption-strong);
+}
+
 .nx-thread-message {
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-card);

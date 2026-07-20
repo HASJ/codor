@@ -61,14 +61,25 @@ function mockRoomState(messages: Record<number, Message>, threads: Record<number
   });
 }
 
+/** The panel reads its thread's history on open; tests that do not care about
+ *  that read still need it to resolve to an empty page rather than hit the network. */
+const stubEmptyThreadHistory = (): void => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ messages: [], has_more: false }),
+  }));
+};
+
 describe('ThreadPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetClientStoreForTest();
+    stubEmptyThreadHistory();
   });
 
   afterEach(() => {
     resetClientStoreForTest();
+    vi.unstubAllGlobals();
   });
 
   it('renders the thread root message and replies, but not other room messages', () => {
@@ -129,6 +140,42 @@ describe('ThreadPanel', () => {
       through_seq: 8,
     });
     vi.useRealTimers();
+  });
+
+  it('reads the thread own history on open and merges it into the room messages', async () => {
+    // The socket hydrates a bounded tail of the room, so an old thread arrives
+    // with replies missing — and the chip, which counts what the client holds,
+    // would undercount with them.
+    const older = {
+      id: 5, room: 'eng', author: 'user2', kind: 'chat', body: 'older reply', seq: 5, thread_root_id: 1,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ messages: [older], has_more: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    mockRoomState(
+      { 1: { id: 1, room: 'eng', author: 'user1', kind: 'chat', body: 'root message', seq: 1 } as any },
+      { 1: { root_message_id: 1, title: 'My Thread', state: 'open' } as any },
+    );
+
+    renderToStaticMarkup(
+      <ThreadPanel
+        room="eng"
+        rootMessageId={1}
+        token={() => 'token'}
+        connection={mockConnection}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/rooms/eng/threads/1/messages?limit=50');
+    await vi.waitFor(() => {
+      expect(useClientStore.getState().rooms.eng!.messages[5]).toBeDefined();
+    });
+    // A thread reply is hidden from the main transcript, so it must not pull the
+    // channel history floor down with it.
+    expect(useClientStore.getState().rooms.eng!.historyCursor).toBe(1);
   });
 
   it('renders read-only (no composer, closed note) when closed', () => {
