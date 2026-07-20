@@ -8,6 +8,7 @@ export * from './interaction.js';
 export * from './delivery.js';
 export * from './changelog.js';
 export * from './room.js';
+export * from './thread.js';
 export * from './events.js';
 export * from './adapter.js';
 export * from './ws.js';
