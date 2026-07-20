@@ -2317,3 +2317,30 @@ describe('threads', () => {
   });
 });
 
+
+// harn:assume agent-replies-stay-in-their-thread ref=continuation-thread-regression
+describe('continuation output stays with its turn', () => {
+  it('puts every stretch of one turn in the thread the turn is answering', () => {
+    const { owner } = openRoom(store);
+    const agent = store.addMember('eng', {
+      kind: 'agent', handle: 'coder', display_name: 'Coder', state: 'running',
+    });
+    const root = store.postMessage('eng', { author: owner.id, kind: 'chat', body: 'the parser' });
+    store.createThread('eng', { rootMessageId: root.id, title: 'parser', createdBy: owner.id });
+    const trigger = store.postMessage('eng', {
+      author: owner.id, kind: 'chat', body: '@coder go', thread_root_id: root.id,
+    });
+    const delivery = store.createDelivery('eng', { message_id: trigger.id, recipient: agent.id });
+    const started = store.beginTurn('eng', {
+      memberId: agent.id,
+      deliveryIds: [delivery.id],
+      startedTs: new Date().toISOString(),
+      eventsRef: (id) => `runs/${id}.jsonl`,
+    })!;
+    // A turn that speaks twice must not leave its first half in the channel.
+    const continuation = store.createRunContinuation('eng', started.runMessage.id);
+    expect(started.runMessage.thread_root_id).toBe(root.id);
+    expect(continuation.thread_root_id).toBe(root.id);
+  });
+});
+// harn:end agent-replies-stay-in-their-thread

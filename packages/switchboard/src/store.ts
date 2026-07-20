@@ -1662,6 +1662,12 @@ export class Store {
       kind: 'run',
       body: '',
       run_parent_id: root.id,
+      // harn:assume agent-replies-stay-in-their-thread ref=continuation-thread-inheritance
+      // Every stretch of one turn's output belongs where the turn does. Leaving
+      // the earlier rows in the channel would scatter a single answer across two
+      // conversations.
+      ...(root.thread_root_id !== undefined && { thread_root_id: root.thread_root_id }),
+      // harn:end agent-replies-stay-in-their-thread
     }, { activity: 'defer' });
   }
 
