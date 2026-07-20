@@ -28,6 +28,12 @@ export const CAPABILITY_MINIMUM_ROLE: Record<HumanCapability, Role> = {
   read: 'observer',
   mark_read: 'observer',
   mark_room_read: 'observer',
+  // A read cursor is not a change to the room: an observer may keep their own.
+  mark_thread_read: 'observer',
+  // Opening and closing a thread is ordinary participation — the same bar as
+  // posting, because a thread is where posting happens.
+  create_thread: 'member',
+  set_thread_state: 'member',
   consume_delivery: 'member',
   post: 'member',
   answer_interaction: 'member',
