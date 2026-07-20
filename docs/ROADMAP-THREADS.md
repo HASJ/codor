@@ -356,7 +356,16 @@ contracts; phase 3 lands after phase 2.
 - [x] `pnpm -r build && pnpm test`
 - [ ] `harn check` — the `harn` CLI is not installed on this host; markers and the
       four assumption files are in place, the gate itself has not been run
-- [ ] Live probe: full verification walkthrough below, on a restarted daemon
+- [x] Live probe against a real daemon (`codor up`, isolated data dir, port 8177),
+      driving the real WebSocket and REST wire — 12/12 checks: thread frame
+      broadcast without a read position, system marker in the channel, reply lands
+      in the thread, REST list with derived counts, REST paging, `mark_thread_read`
+      answering only the caller, close, closed-thread refusal, and a fresh
+      subscribe rehydrating the thread with the viewer's own cursor
+- [ ] Live probe of the BROWSER surface (chip, panel, unread badge) — no browser
+      driven in this session; the daemon-side path it depends on is verified above
+- [ ] Live probe of an agent turn inside a thread against a real harness — covered
+      by `daemon.spec.ts` with the fake adapter, not against a live model
 - [ ] PR
 
 ### Known gaps (deliberate, not done)
