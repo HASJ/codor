@@ -20,3 +20,6 @@ xcuserdata/
 .DS_Store
 .env
 tmp/
+
+# Playwright MCP scratch output (browser probes), never part of the tree
+.playwright-mcp/

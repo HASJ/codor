@@ -33,6 +33,10 @@ export default defineConfig({
     // silently couples runs through mutated messages, cursors, and adapter
     // queues, producing failures that cannot occur in a clean browser session.
     reuseExistingServer: false,
+    // The command builds 15 packages before it boots; a cold or partially
+    // invalidated tree blows Playwright's 60s default on Windows and every test
+    // then fails as a server timeout rather than a real result.
+    timeout: 180_000,
     stdout: 'pipe',
     stderr: 'pipe',
   },

@@ -85,6 +85,7 @@ for (const [id, name] of [
   ['inbox', 'Inbox Fixtures'],
   ['chronology', 'Chronology'],
   ['continuations', 'Continuation Fixtures'],
+  ['threads', 'Threads'],
 ]) {
   daemon.createRoom({ id, name, owner });
   crypto.roomKeys.ensureRoom(id);
@@ -1036,6 +1037,43 @@ daemon.store.postMessage('eng', {
   kind: 'chat',
   body: 'chronology probe posted after the running turn started',
 });
+
+// ── Threads: one thread buried behind the hydration tail, one inside it ──
+// The socket hydrates a bounded tail of the room, so «parser» is seeded with
+// more replies than that tail can hold and then pushed out of it by channel
+// traffic: the panel has to read the thread's own history to fill, and the chip
+// — which counts the messages the client holds — only tells the truth once it
+// does. «flake» stays inside the tail so its unread badge is real.
+const threadsOwner = daemon.ownerOf('threads');
+const nadia = daemon.store.addMember('threads', {
+  kind: 'human', handle: 'nadia', display_name: 'Nadia', role: 'member',
+});
+const parserRoot = daemon.store.postMessage('threads', {
+  author: threadsOwner.id, kind: 'chat', body: 'ship the parser rewrite',
+});
+daemon.createThread('threads', parserRoot.id, threadsOwner.id);
+for (let index = 1; index <= 25; index++) {
+  daemon.store.postMessage('threads', {
+    author: nadia.id,
+    kind: 'chat',
+    body: `parser reply ${index}`,
+    thread_root_id: parserRoot.id,
+  });
+}
+for (let index = 1; index <= 25; index++) {
+  daemon.store.postMessage('threads', {
+    author: threadsOwner.id, kind: 'chat', body: `channel filler ${index}`,
+  });
+}
+const flakeRoot = daemon.store.postMessage('threads', {
+  author: threadsOwner.id, kind: 'chat', body: 'the ledger spec is flaky again',
+});
+daemon.createThread('threads', flakeRoot.id, threadsOwner.id);
+for (const body of ['it fails under load', 'passes on its own']) {
+  daemon.store.postMessage('threads', {
+    author: nadia.id, kind: 'chat', body, thread_root_id: flakeRoot.id,
+  });
+}
 
 // ── Control endpoint: tests script upcoming fake turns just-in-time ──────
 createServer((req, res) => {
