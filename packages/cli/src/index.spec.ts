@@ -147,6 +147,7 @@ describe('@codor/cli', () => {
       'channels',
       'serve',
       'setup',
+      'restart',
       'spawn',
       'post',
       'tail',
@@ -340,6 +341,25 @@ describe('@codor/cli', () => {
       [dry-run] generate a ten-minute pairing link and exact-payload terminal QR"
     `);
     expect(existsSync(join(home, '.config', 'codor'))).toBe(false);
+  });
+
+  it('restart targets the installed service and the switchboard URL the CLI is pointed at', async () => {
+    const ran: string[] = [];
+    await runCli(['node', 'codor', '--url', 'ws://127.0.0.1:9137', 'restart'], {
+      env: {},
+      stdout: (line) => output.push(line),
+      service: {
+        platform: 'linux',
+        exec: (command, args) => {
+          ran.push(`${command} ${args.join(' ')}`);
+          return '';
+        },
+        probe: async () => true,
+      },
+    });
+    expect(ran).toEqual(['systemctl --user restart codor.service']);
+    // ws:// is the socket the CLI talks; the health answer is the http origin.
+    expect(output.join('\n')).toContain('answering on http://127.0.0.1:9137/');
   });
 
   // harn:assume setup-service-runs-from-current-checkout ref=linux-service-current-checkout-regression

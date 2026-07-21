@@ -228,8 +228,10 @@ tail -f "$HOME/.codor/logs/codor.err.log"
 ```
 
 For upgrades, run `git pull --ff-only`, reinstall with the same frozen pnpm command, rebuild, then
-restart `codor.service` on Linux or
-`app.codor.switchboard` with `launchctl kickstart -k` on macOS.
+`codor restart` — it drives systemd, launchctl, or the Windows scheduled task for you and waits
+until the switchboard answers again. The daemon serves the client build it loaded at start, so a
+rebuild is invisible until it restarts. `codor restart --dry-run` prints the platform command
+without running it.
 
 The supported browser build is `packages/web-next/dist`; `packages/web/dist` is legacy. Foreground
 development, backup, restore, and detailed operations are in
@@ -262,6 +264,7 @@ are useful from a terminal:
 
 ```sh
 codor channels
+codor restart                               # restart the installed user service
 codor post -r desk '@reviewer check #12'
 codor tail -r desk --once
 codor revive -r desk reviewer

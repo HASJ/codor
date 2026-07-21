@@ -32,6 +32,7 @@ import {
 import { ProtocolClient, type ProtocolClientOptions } from './connection.js';
 import { detectSession } from './detect.js';
 import { parseMirrorHook } from './mirror.js';
+import { runServiceRestart, type ServiceOverrides } from './service.js';
 import { runSetup, type SetupOverrides } from './setup.js';
 import { renderTerminalQr } from './terminal-qr.js';
 import { parseLine, startOutpost, startCodor, waitForShutdown } from './up.js';
@@ -45,6 +46,7 @@ export interface CliContext {
   attachHeartbeatMs?: number;
   renderQr?(payload: string): string;
   setup?: SetupOverrides;
+  service?: ServiceOverrides;
 }
 
 interface GlobalOptions {
@@ -495,6 +497,19 @@ export function createProgram(context: CliContext = {}): Command {
       });
     });
   // harn:end cli-setup-wizard-installs-platform-user-service
+
+  program
+    .command('restart')
+    .description('restart the switchboard user service installed by codor setup')
+    .option('--dry-run', 'print the platform commands without touching the host')
+    .action(async (options: { dryRun?: boolean }) => {
+      await runServiceRestart({
+        dryRun: options.dryRun === true,
+        out,
+        url: restUrl('/').toString(),
+        overrides: context.service,
+      });
+    });
 
   program
     .command('spawn')
