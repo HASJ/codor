@@ -362,16 +362,28 @@ contracts; phase 3 lands after phase 2.
       in the thread, REST list with derived counts, REST paging, `mark_thread_read`
       answering only the caller, close, closed-thread refusal, and a fresh
       subscribe rehydrating the thread with the viewer's own cursor
-- [ ] Live probe of the BROWSER surface (chip, panel, unread badge) — no browser
-      driven in this session; the daemon-side path it depends on is verified above
+- [x] Live probe of the BROWSER surface — driven twice. Once by hand against a
+      real `codor up` daemon (paired browser: create thread from a message, the
+      channel's system marker, the chip ticking to "1 reply · last active now"
+      on the very next reply, the reply staying out of the transcript, and
+      `mark_thread_read` landing in `thread_read_cursors`), and then pinned as
+      regression coverage in `packages/web-next/tests/room28-threads.e2e.spec.ts`
+      (3/3): an old thread reached by search-and-jump opens whole and issues its
+      thread-history read, the unread badge counts peer replies until the thread
+      itself is opened, and a reply posts into the thread while closing seals it.
 - [ ] Live probe of an agent turn inside a thread against a real harness — covered
       by `daemon.spec.ts` with the fake adapter, not against a live model
 - [ ] PR
 
 ### Known gaps (deliberate, not done)
-- [ ] `ThreadPanel` reads only the thread messages already hydrated on the socket;
-      the paged REST endpoint (`GET /api/rooms/:room/threads/:rootId/messages`)
-      exists and is tested but the panel does not call it yet, so a thread whose
-      replies fell outside `hydrate_limit` opens partially filled.
+- [ ] The panel's "Load earlier replies" control (`has_more`) has no fixture with
+      more than `THREAD_PAGE_SIZE` (50) replies, so only the first page is exercised.
 - [ ] Bridges (Slack/Telegram) have no thread mapping.
+
+### Fixed after the merge
+- [x] `ThreadPanel` now reads `GET /api/rooms/:room/threads/:rootId/messages` when
+      it opens, and merges the page into the room's one message map so the chip
+      and the panel agree. It deliberately leaves `historyCursor` alone: threaded
+      rows are hidden from the transcript, so pulling the channel's history floor
+      down to an old reply would claim history the transcript never fetched.
 
