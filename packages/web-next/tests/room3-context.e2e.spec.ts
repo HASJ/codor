@@ -1,6 +1,12 @@
+import { tmpdir } from 'node:os';
+
 import { expect, test, type Page } from '@playwright/test';
 
 const ROOM = '/?room=eng&token=next-e2e-token';
+// The daemon refuses a working directory that does not exist, and '/tmp'
+// resolves to a missing J:\tmp on Windows — which failed the spawn, and then
+// failed room10's roster count, which assumes these members exist.
+const SPAWN_CWD = tmpdir();
 // The tool-evidence tests read a seeded run, so they open the stable fixtures
 // room rather than paging eng's growing history back to reach the same run.
 const FIXTURES = '/?room=fixtures&token=next-e2e-token';
@@ -67,7 +73,7 @@ test.describe('spawn dialog', () => {
     expect(focusInside).toBe(true);
 
     await dialog.getByTestId('spawn-handle').fill('nova');
-    await dialog.getByTestId('spawn-cwd').fill('/tmp');
+    await dialog.getByTestId('spawn-cwd').fill(SPAWN_CWD);
     await expect(dialog.getByTestId('spawn-go')).toBeEnabled();
     await dialog.getByTestId('spawn-go').click();
     await expect(page.getByTestId('member-nova')).toBeVisible();
@@ -95,7 +101,7 @@ test.describe('spawn before adapter discovery', () => {
 
     // Fill everything a human can fill while the harness list is still absent.
     await dialog.getByTestId('spawn-handle').fill('lateling');
-    await dialog.getByTestId('spawn-cwd').fill('/tmp');
+    await dialog.getByTestId('spawn-cwd').fill(SPAWN_CWD);
     await expect(dialog.getByTestId('spawn-go')).toBeDisabled();
 
     holding = false;
